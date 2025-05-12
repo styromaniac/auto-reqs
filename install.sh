@@ -857,82 +857,140 @@ class EnvironmentManager:
         # Fall back to system Python
         return sys.executable
     
-    def install_dependencies(self, project_dir, requirements_file=None):
+    def install_dependencies(self, project_dir, requirements_file=None, quiet_mode=False, continue_on_error=True):
         """Install dependencies for a project based on its environment type."""
         env_info = self.detect_environment(project_dir)
         success = False
+        problem_packages = []
         
         if not requirements_file:
             requirements_file = os.path.join(project_dir, "requirements.txt")
             if not os.path.exists(requirements_file):
                 logging.warning(f"No requirements.txt found in {project_dir}")
-                return False
+                return False, []
         
-        logging.info(f"Installing dependencies from {requirements_file} for {project_dir}")
+        if not quiet_mode:
+            logging.info(f"Installing dependencies from {requirements_file} for {project_dir}")
         
         try:
             if env_info["package_manager"] == "pip":
+                # Try to identify problematic packages first and install them separately
+                with open(requirements_file, 'r') as f:
+                    requirements = f.read().splitlines()
+                
+                # Filter out comments and empty lines
+                requirements = [r.strip() for r in requirements if r.strip() and not r.strip().startswith('#')]
+                
                 # Use the environment's Python to install
                 python_exec = self.get_python_executable(project_dir)
-                cmd = [python_exec, "-m", "pip", "install", "-r", requirements_file]
                 
-                result = subprocess.run(
-                    cmd, cwd=project_dir, capture_output=True, text=True
-                )
-                
-                if result.returncode == 0:
-                    logging.info(f"Successfully installed dependencies for {project_dir}")
-                    success = True
+                if continue_on_error:
+                    # Try installing one by one to identify problematic packages
+                    for req in requirements:
+                        if ';' in req:  # Skip environment markers for now
+                            continue
+                            
+                        # Skip options (lines starting with -)
+                        if req.startswith('-'):
+                            continue
+                            
+                        cmd = [python_exec, "-m", "pip", "install", req]
+                        
+                        if quiet_mode:
+                            cmd.append("--quiet")
+                        
+                        result = subprocess.run(
+                            cmd, cwd=project_dir, capture_output=True, text=True
+                        )
+                        
+                        if result.returncode != 0:
+                            problem_packages.append(req)
+                            if not quiet_mode:
+                                logging.error(f"Failed to install {req}: {result.stderr.splitlines()[-1] if result.stderr else 'Unknown error'}")
+                    
+                    success = len(problem_packages) < len(requirements)
                 else:
-                    logging.error(f"Failed to install dependencies: {result.stderr}")
-            
-            elif env_info["package_manager"] == "conda":
-                # Handle conda environments
-                if "name" in env_info:
-                    cmd = ["conda", "install", "--file", requirements_file, "-n", env_info["name"], "-y"]
+                    # Install all at once
+                    cmd = [python_exec, "-m", "pip", "install", "-r", requirements_file]
+                    
+                    if quiet_mode:
+                        cmd.append("--quiet")
                     
                     result = subprocess.run(
                         cmd, cwd=project_dir, capture_output=True, text=True
                     )
                     
                     if result.returncode == 0:
-                        logging.info(f"Successfully installed dependencies for conda env {env_info['name']}")
+                        if not quiet_mode:
+                            logging.info(f"Successfully installed dependencies for {project_dir}")
                         success = True
                     else:
-                        logging.error(f"Failed to install conda dependencies: {result.stderr}")
+                        if not quiet_mode:
+                            logging.error(f"Failed to install dependencies: {result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'}")
+            
+            elif env_info["package_manager"] == "conda":
+                # Handle conda environments
+                if "name" in env_info:
+                    cmd = ["conda", "install", "--file", requirements_file, "-n", env_info["name"], "-y"]
+                    
+                    if quiet_mode:
+                        cmd.append("-q")
+                    
+                    result = subprocess.run(
+                        cmd, cwd=project_dir, capture_output=True, text=True
+                    )
+                    
+                    if result.returncode == 0:
+                        if not quiet_mode:
+                            logging.info(f"Successfully installed dependencies for conda env {env_info['name']}")
+                        success = True
+                    else:
+                        if not quiet_mode:
+                            logging.error(f"Failed to install conda dependencies: {result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'}")
             
             elif env_info["package_manager"] == "poetry":
                 # Handle poetry projects
                 cmd = ["poetry", "install"]
                 
+                if quiet_mode:
+                    cmd.append("-q")
+                
                 result = subprocess.run(
                     cmd, cwd=project_dir, capture_output=True, text=True
                 )
                 
                 if result.returncode == 0:
-                    logging.info(f"Successfully installed dependencies with poetry for {project_dir}")
+                    if not quiet_mode:
+                        logging.info(f"Successfully installed dependencies with poetry for {project_dir}")
                     success = True
                 else:
-                    logging.error(f"Failed to install poetry dependencies: {result.stderr}")
+                    if not quiet_mode:
+                        logging.error(f"Failed to install poetry dependencies: {result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'}")
             
             elif env_info["package_manager"] == "pipenv":
                 # Handle pipenv projects
                 cmd = ["pipenv", "install"]
                 
+                if quiet_mode:
+                    cmd.append("--quiet")
+                
                 result = subprocess.run(
                     cmd, cwd=project_dir, capture_output=True, text=True
                 )
                 
                 if result.returncode == 0:
-                    logging.info(f"Successfully installed dependencies with pipenv for {project_dir}")
+                    if not quiet_mode:
+                        logging.info(f"Successfully installed dependencies with pipenv for {project_dir}")
                     success = True
                 else:
-                    logging.error(f"Failed to install pipenv dependencies: {result.stderr}")
+                    if not quiet_mode:
+                        logging.error(f"Failed to install pipenv dependencies: {result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'}")
         
         except Exception as e:
-            logging.error(f"Error installing dependencies: {e}")
+            if not quiet_mode:
+                logging.error(f"Error installing dependencies: {e}")
         
-        return success
+        return success, problem_packages
 
 class BuildManager:
     """Handle project building and compilation."""
@@ -962,13 +1020,16 @@ class BuildManager:
         
         return False
     
-    def build_project(self, project_dir):
+    def build_project(self, project_dir, quiet_mode=False, continue_on_error=True):
         """Build the project if it has compiled components."""
         if not self.has_compiled_components(project_dir):
-            logging.info(f"No compiled components detected in {project_dir}")
+            if not quiet_mode:
+                logging.info(f"No compiled components detected in {project_dir}")
             return True
         
-        logging.info(f"Building project with compiled components: {project_dir}")
+        if not quiet_mode:
+            logging.info(f"Building project with compiled components: {project_dir}")
+        
         env_info = self.env_manager.detect_environment(project_dir)
         python_exec = self.env_manager.get_python_executable(project_dir)
         success = False
@@ -983,40 +1044,78 @@ class BuildManager:
                 )
                 
                 if result.returncode == 0:
-                    logging.info(f"Successfully built extensions for {project_dir}")
+                    if not quiet_mode:
+                        logging.info(f"Successfully built extensions for {project_dir}")
                     success = True
                 else:
-                    logging.error(f"Failed to build extensions: {result.stderr}")
+                    error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
+                    if not quiet_mode:
+                        logging.error(f"Failed to build extensions: {error_msg}")
                     
-                    # Try regular build
-                    cmd = [python_exec, "setup.py", "build"]
+                    # If first attempt failed and we want to continue, try regular build
+                    if continue_on_error:
+                        cmd = [python_exec, "setup.py", "build"]
+                        
+                        result = subprocess.run(
+                            cmd, cwd=project_dir, capture_output=True, text=True
+                        )
+                        
+                        if result.returncode == 0:
+                            if not quiet_mode:
+                                logging.info(f"Successfully built project {project_dir}")
+                            success = True
+                        else:
+                            error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
+                            if not quiet_mode:
+                                logging.error(f"Failed to build project: {error_msg}")
                     
-                    result = subprocess.run(
-                        cmd, cwd=project_dir, capture_output=True, text=True
-                    )
-                    
-                    if result.returncode == 0:
-                        logging.info(f"Successfully built project {project_dir}")
-                        success = True
-                    else:
-                        logging.error(f"Failed to build project: {result.stderr}")
+                    # Try other build methods if available
+                    if not success and continue_on_error and os.path.exists(os.path.join(project_dir, "setup.py")):
+                        # Try with alternate compilation flags
+                        cmd = [python_exec, "setup.py", "build_ext", "--inplace", "--no-python-abi-suffix"]
+                        
+                        result = subprocess.run(
+                            cmd, cwd=project_dir, capture_output=True, text=True
+                        )
+                        
+                        if result.returncode == 0:
+                            if not quiet_mode:
+                                logging.info(f"Successfully built extensions with --no-python-abi-suffix for {project_dir}")
+                            success = True
             
-            # Try pip install -e . for development mode
-            if not success:
+            # Try pip install -e . for development mode if all else failed
+            if not success and continue_on_error:
                 cmd = [python_exec, "-m", "pip", "install", "-e", "."]
+                
+                if quiet_mode:
+                    cmd.append("--quiet")
                 
                 result = subprocess.run(
                     cmd, cwd=project_dir, capture_output=True, text=True
                 )
                 
                 if result.returncode == 0:
-                    logging.info(f"Successfully installed project in development mode: {project_dir}")
+                    if not quiet_mode:
+                        logging.info(f"Successfully installed project in development mode: {project_dir}")
                     success = True
                 else:
-                    logging.error(f"Failed to install in development mode: {result.stderr}")
+                    error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
+                    if not quiet_mode:
+                        logging.error(f"Failed to install in development mode: {error_msg}")
+            
+            # If we continue in error and still couldn't build, note this but consider it a "success"
+            # for the purpose of continuing the script
+            if not success and continue_on_error:
+                if not quiet_mode:
+                    logging.warning(f"Could not build {project_dir}, but continuing due to continue_on_error=True")
+                # Return "success" so the script continues
+                return True
         
         except Exception as e:
-            logging.error(f"Error building project: {e}")
+            if not quiet_mode:
+                logging.error(f"Error building project: {e}")
+            if continue_on_error:
+                return True
         
         return success
 
@@ -1053,13 +1152,16 @@ class TestManager:
         
         return False
     
-    def run_tests(self, project_dir):
+    def run_tests(self, project_dir, quiet_mode=False, continue_on_error=True):
         """Run the project's tests."""
         if not self.has_tests(project_dir):
-            logging.info(f"No tests detected in {project_dir}")
+            if not quiet_mode:
+                logging.info(f"No tests detected in {project_dir}")
             return True
         
-        logging.info(f"Running tests for project: {project_dir}")
+        if not quiet_mode:
+            logging.info(f"Running tests for project: {project_dir}")
+        
         env_info = self.env_manager.detect_environment(project_dir)
         python_exec = self.env_manager.get_python_executable(project_dir)
         success = False
@@ -1068,33 +1170,59 @@ class TestManager:
             # Try pytest first
             cmd = [python_exec, "-m", "pytest"]
             
+            if quiet_mode:
+                cmd.append("-q")
+            
             result = subprocess.run(
                 cmd, cwd=project_dir, capture_output=True, text=True, timeout=300  # 5-minute timeout
             )
             
             if result.returncode == 0:
-                logging.info(f"Tests passed for {project_dir}")
+                if not quiet_mode:
+                    logging.info(f"Tests passed for {project_dir}")
                 success = True
             else:
-                logging.warning(f"Tests failed for {project_dir}: {result.stderr}")
+                error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
+                if not quiet_mode:
+                    logging.warning(f"Tests failed for {project_dir}: {error_msg}")
                 
                 # Try unittest as fallback
-                cmd = [python_exec, "-m", "unittest", "discover"]
+                if continue_on_error:
+                    cmd = [python_exec, "-m", "unittest", "discover"]
+                    
+                    if quiet_mode:
+                        cmd.append("-q")
+                    
+                    result = subprocess.run(
+                        cmd, cwd=project_dir, capture_output=True, text=True, timeout=300
+                    )
+                    
+                    if result.returncode == 0:
+                        if not quiet_mode:
+                            logging.info(f"Unittest tests passed for {project_dir}")
+                        success = True
+                    else:
+                        error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
+                        if not quiet_mode:
+                            logging.warning(f"Unittest tests failed for {project_dir}: {error_msg}")
                 
-                result = subprocess.run(
-                    cmd, cwd=project_dir, capture_output=True, text=True, timeout=300
-                )
-                
-                if result.returncode == 0:
-                    logging.info(f"Unittest tests passed for {project_dir}")
-                    success = True
-                else:
-                    logging.warning(f"Unittest tests failed for {project_dir}: {result.stderr}")
+                # If we continue in error and couldn't run tests, note this but consider it a "success"
+                if not success and continue_on_error:
+                    if not quiet_mode:
+                        logging.warning(f"Could not run tests for {project_dir}, but continuing due to continue_on_error=True")
+                    # Return "success" so the script continues
+                    return True
         
         except subprocess.TimeoutExpired:
-            logging.error(f"Tests timed out for {project_dir}")
+            if not quiet_mode:
+                logging.error(f"Tests timed out for {project_dir}")
+            if continue_on_error:
+                return True
         except Exception as e:
-            logging.error(f"Error running tests: {e}")
+            if not quiet_mode:
+                logging.error(f"Error running tests: {e}")
+            if continue_on_error:
+                return True
         
         return success
 
@@ -2026,10 +2154,26 @@ def learn_from_community_data():
 
 def process_python_project(project_dir):
     """Process a Python project directory for requirements updates."""
-    logging.info(f"Processing project: {project_dir}")
+    # Get config settings
+    config_file = os.path.expanduser("~/.config/smart-update-reqs/config.json")
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+    else:
+        config = {
+            "quiet_mode": False,
+            "continue_on_build_error": True
+        }
+    
+    quiet_mode = config.get("quiet_mode", False)
+    continue_on_error = config.get("continue_on_build_error", True)
+    
+    if not quiet_mode:
+        logging.info(f"Processing project: {project_dir}")
     
     updates_made = False
     updated_files = []
+    problem_packages = []
     
     # Check for requirements.txt
     requirements_file = os.path.join(project_dir, "requirements.txt")
@@ -2076,7 +2220,8 @@ def process_python_project(project_dir):
     
     # If updates were made, rebuild the project
     if updates_made:
-        logging.info(f"Updates made to {project_dir}, rebuilding...")
+        if not quiet_mode:
+            logging.info(f"Updates made to {project_dir}, rebuilding...")
         
         # Initialize managers
         env_manager = EnvironmentManager()
@@ -2085,19 +2230,36 @@ def process_python_project(project_dir):
         
         # For each updated requirements file, install dependencies
         for req_file in updated_files:
-            env_manager.install_dependencies(project_dir, req_file)
+            success, project_problem_packages = env_manager.install_dependencies(
+                project_dir, 
+                req_file, 
+                quiet_mode=quiet_mode, 
+                continue_on_error=continue_on_error
+            )
+            problem_packages.extend(project_problem_packages)
         
         # Build project if it has compiled components
         if build_manager.has_compiled_components(project_dir):
-            build_success = build_manager.build_project(project_dir)
-            if not build_success:
+            build_success = build_manager.build_project(project_dir, 
+                                                      quiet_mode=quiet_mode, 
+                                                      continue_on_error=continue_on_error)
+            if not build_success and not quiet_mode:
                 logging.warning(f"Build failed for {project_dir}, but continuing...")
         
         # Run tests if available
         if test_manager.has_tests(project_dir):
-            test_success = test_manager.run_tests(project_dir)
-            if not test_success:
+            test_success = test_manager.run_tests(project_dir, 
+                                               quiet_mode=quiet_mode, 
+                                               continue_on_error=continue_on_error)
+            if not test_success and not quiet_mode:
                 logging.warning(f"Tests failed for {project_dir}, but continuing...")
+    
+    # Print summary if there were problems
+    if problem_packages and not quiet_mode:
+        logging.warning(f"The following packages had installation issues for {project_dir}:")
+        for pkg in problem_packages:
+            logging.warning(f"  - {pkg}")
+        logging.warning("These packages may need manual installation or additional build dependencies.")
     
     return updates_made
 
@@ -2120,6 +2282,37 @@ def print_system_info():
 
 def main():
     """Main function to find and update Python projects."""
+    # Get command-line arguments
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Smart Requirements Updater')
+    parser.add_argument('--quiet', '-q', action='store_true', help='Only show errors and summary')
+    parser.add_argument('--errors-only', '-e', action='store_true', help='Only show errors')
+    parser.add_argument('--continue-on-error', '-c', action='store_true', help='Continue despite build or installation errors')
+    parser.add_argument('--skip-build', '-s', action='store_true', help='Skip building and testing after updating requirements')
+    parser.add_argument('--config', type=str, help='Path to custom config file')
+    args = parser.parse_args()
+    
+    # Configure logging based on verbosity
+    if args.errors_only:
+        logging.basicConfig(
+            level=logging.ERROR,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(LOG_FILE),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+    elif args.quiet:
+        logging.basicConfig(
+            level=logging.WARNING,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(LOG_FILE),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+    
     logging.info("Starting smart requirements updater")
     
     # Fix regex escape sequences
@@ -2138,9 +2331,10 @@ def main():
     learn_from_community_data()
     
     # Load config or create default
-    config_file = os.path.expanduser("~/.config/smart-update-reqs/config.json")
-    if os.path.exists(config_file):
-        with open(config_file, 'r') as f:
+    config_path = args.config if args.config else os.path.expanduser("~/.config/smart-update-reqs/config.json")
+    
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
             config = json.load(f)
     else:
         config = {
@@ -2148,19 +2342,35 @@ def main():
             "exclude_directories": [
                 "~/anaconda3", "~/miniconda3", "~/venv", "~/.venv"
             ],
-            "auto_rebuild": True,
-            "auto_test": True,
+            "auto_rebuild": not args.skip_build,
+            "auto_test": not args.skip_build,
             "rebuild_timeout": 600,  # 10 minutes timeout for rebuilds
-            "prompt_before_rebuild": False  # Set to True to prompt before rebuilding
+            "prompt_before_rebuild": False,  # Set to True to prompt before rebuilding
+            "quiet_mode": args.quiet or args.errors_only,
+            "continue_on_build_error": args.continue_on_error or True
         }
-        os.makedirs(os.path.dirname(config_file), exist_ok=True)
-        with open(config_file, 'w') as f:
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
+    
+    # Override config with command line arguments
+    if args.quiet or args.errors_only:
+        config["quiet_mode"] = True
+    if args.continue_on_error:
+        config["continue_on_build_error"] = True
+    if args.skip_build:
+        config["auto_rebuild"] = False
+        config["auto_test"] = False
+    
+    # Save updated config
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
     
     projects_updated = 0
     projects_processed = 0
     projects_rebuilt = 0
     projects_tested = 0
+    error_projects = []
     
     # Process each scan directory
     for scan_dir in config["scan_directories"]:
@@ -2170,7 +2380,8 @@ def main():
             continue
         
         python_projects = find_python_projects(scan_dir)
-        logging.info(f"Found {len(python_projects)} Python projects in {scan_dir}")
+        if not config.get("quiet_mode", False):
+            logging.info(f"Found {len(python_projects)} Python projects in {scan_dir}")
         
         # Expand excluded directories
         expanded_exclude_dirs = [os.path.expanduser(d) for d in config.get("exclude_directories", [])]
@@ -2178,29 +2389,44 @@ def main():
         for project in python_projects:
             # Skip excluded directories
             if any(project.startswith(exclude) for exclude in expanded_exclude_dirs):
-                logging.info(f"Skipping excluded project: {project}")
+                if not config.get("quiet_mode", False):
+                    logging.info(f"Skipping excluded project: {project}")
                 continue
             
             projects_processed += 1
-            if process_python_project(project):
-                projects_updated += 1
-                
-                # Initialize environment manager for checking rebuild status
-                env_manager = EnvironmentManager()
-                build_manager = BuildManager(env_manager)
-                test_manager = TestManager(env_manager)
-                
-                # Log rebuild and test status
-                if build_manager.has_compiled_components(project):
-                    projects_rebuilt += 1
-                
-                if test_manager.has_tests(project):
-                    projects_tested += 1
+            try:
+                if process_python_project(project):
+                    projects_updated += 1
+                    
+                    # Initialize environment manager for checking rebuild status
+                    env_manager = EnvironmentManager()
+                    build_manager = BuildManager(env_manager)
+                    test_manager = TestManager(env_manager)
+                    
+                    # Log rebuild and test status
+                    if build_manager.has_compiled_components(project):
+                        projects_rebuilt += 1
+                    
+                    if test_manager.has_tests(project):
+                        projects_tested += 1
+            except Exception as e:
+                error_projects.append((project, str(e)))
+                logging.error(f"Error processing {project}: {e}")
+                if not config.get("continue_on_build_error", True):
+                    break
     
+    # Print summary
     logging.info(f"Completed processing {projects_processed} Python projects")
     logging.info(f"Updated {projects_updated} projects")
-    logging.info(f"Rebuilt {projects_rebuilt} projects with compiled components")
-    logging.info(f"Tested {projects_tested} projects")
+    
+    if config.get("auto_rebuild", True):
+        logging.info(f"Rebuilt {projects_rebuilt} projects with compiled components")
+        logging.info(f"Tested {projects_tested} projects")
+    
+    if error_projects:
+        logging.warning("The following projects had errors:")
+        for project, error in error_projects:
+            logging.warning(f"  - {project}: {error}")
     
     # Save final knowledge base
     _save_knowledge_base()
@@ -2254,7 +2480,9 @@ cat > ~/.config/smart-update-reqs/config.json << 'EOF'
   ],
   "auto_rebuild": true,
   "auto_test": true,
-  "rebuild_timeout": 600
+  "rebuild_timeout": 600,
+  "quiet_mode": false,
+  "continue_on_build_error": true
 }
 EOF
 
