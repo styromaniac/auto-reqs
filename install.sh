@@ -1,75 +1,112 @@
-def update_conda_installations(quiet_mode=False):
-    """Update Anaconda and Miniconda installations if they exist."""
+def update_conda_installation():
+    """Update Anaconda/Miniconda installation if available."""
+    logging.info("Checking for Anaconda/Miniconda installations to update...")
+    
+    # Possible locations for conda executables
     conda_paths = [
         os.path.expanduser("~/anaconda3/bin/conda"),
         os.path.expanduser("~/miniconda3/bin/conda"),
-        # Try to find conda in PATH
-        "conda"
+        "/opt/anaconda3/bin/conda",
+        "/opt/miniconda3/bin/conda",
+        # Windows paths
+        os.path.expanduser("~/anaconda3/Scripts/conda.exe"),
+        os.path.expanduser("~/miniconda3/Scripts/conda.exe")
     ]
     
-    updated = False
+    # Find conda executable
+    conda_exe = None
+    for path in conda_paths:
+        if os.path.exists(path):
+            conda_exe = path
+            break
     
-    for conda_path in conda_paths:
+    # If conda not found in common locations, try from PATH
+    if not conda_exe:
         try:
-            # Check if this conda exists
-            if conda_path != "conda":
-                if not os.path.exists(conda_path):
-                    continue
-            
-            # Try to run conda info to verify it works
-            result = subprocess.run(
-                [conda_path, "info", "--json"],
-                capture_output=True, text=True
-            )
-            
-            if result.returncode != 0:
-                continue
-            
-            # Get conda info
-            info = json.loads(result.stdout)
-            conda_version = info.get("conda_version")
-            root_prefix = info.get("root_prefix")
-            
-            if not quiet_mode:
-                logging.info(f"Updating conda installation at {root_prefix} (version {conda_version})")
-            
-            # Update conda itself first
-            update_cmd = [conda_path, "update", "-n", "base", "conda", "-y"]
-            if quiet_mode:
-                update_cmd.append("-q")
-            
-            result = subprocess.run(
-                update_cmd,
-                capture_output=True, text=True
-            )
+            result = subprocess.run(["which", "conda"], capture_output=True, text=True)
+            if result.returncode == 0 and result.stdout.strip():
+                conda_exe = result.stdout.strip()
+        except:
+            # On Windows, try where instead of which
+            try:
+                result = subprocess.run(["where", "conda"], capture_output=True, text=True)
+                if result.returncode == 0 and result.stdout.strip():
+                    # Take the first line if multiple results
+                    conda_exe = result.stdout.strip().split('\n')[0]
+            except:
+                pass
+    
+    if not conda_exe:
+        logging.info("No Anaconda/Miniconda installation found.")
+        return False
+    
+    logging.info(f"Found conda at: {conda_exe}")
+    
+    # Update conda itself first
+    try:
+        logging.info("Updating conda...")
+        result = subprocess.run([conda_exe, "update", "-n", "base", "conda", "-y"], 
+                                capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            logging.info("Successfully updated conda.")
+        else:
+            logging.warning(f"Failed to update conda: {result.stderr}")
+            return False
+    except Exception as e:
+        logging.error(f"Error updating conda: {e}")
+        return False
+    
+    # Update core packages
+    try:
+        logging.info("Updating core Anaconda/Miniconda packages...")
+        core_packages = [
+            "python", "pip", "setuptools", "wheel", "conda-build", 
+            "numpy", "scipy", "pandas", "matplotlib"
+        ]
+        
+        result = subprocess.run([conda_exe, "update", "-n", "base", "--all", "-y"], 
+                               capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            logging.info("Successfully updated all base packages.")
+        else:
+            # Try updating just the core packages
+            logging.warning("Failed to update all packages. Trying core packages only...")
+            result = subprocess.run([conda_exe, "update", "-n", "base"] + core_packages + ["-y"], 
+                                   capture_output=True, text=True)
             
             if result.returncode == 0:
-                if not quiet_mode:
-                    logging.info(f"Successfully updated conda at {root_prefix}")
-                
-                # Update common essential packages
-                essentials_cmd = [conda_path, "update", "-n", "base", "-y", "python", "pip"]
-                if quiet_mode:
-                    essentials_cmd.append("-q")
-                
-                result = subprocess.run(
-                    essentials_cmd,
-                    capture_output=True, text=True
-                )
-                
-                if result.returncode == 0 and not quiet_mode:
-                    logging.info(f"Successfully updated python and pip in base environment")
-                
-                updated = True
+                logging.info("Successfully updated core packages.")
             else:
-                error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
-                if not quiet_mode:
-                    logging.error(f"Failed to update conda: {error_msg}")
-        except Exception as e:
-            if not quiet_mode:
-                logging.error(f"Error updating conda: {e}")
+                logging.warning(f"Failed to update core packages: {result.stderr}")
+                return False
+    except Exception as e:
+        logging.error(f"Error updating core packages: {e}")
+        return False
     
-    return updated#!/bin/bash
+    # Update conda-forge channel packages if available
+    try:
+        logging.info("Checking for conda-forge channel...")
+        result = subprocess.run([conda_exe, "config", "--show", "channels"], 
+                               capture_output=True, text=True)
+        
+        if "conda-forge" in result.stdout:
+            logging.info("Updating conda-forge packages...")
+            result = subprocess.run([conda_exe, "update", "-n", "base", "-c", "conda-forge", "--all", "-y"], 
+                                   capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                logging.info("Successfully updated conda-forge packages.")
+            else:
+                logging.warning(f"Failed to update conda-forge packages: {result.stderr}")
+        else:
+            logging.info("conda-forge channel not found in configuration.")
+    except Exception as e:
+        logging.error(f"Error updating conda-forge packages: {e}")
+    
+    logging.info("Anaconda/Miniconda update completed.")
+    return True#!/bin/bash
 # Smart Requirements Updater Installation Script
 
 echo "Installing Smart Requirements Updater..."
@@ -2361,8 +2398,8 @@ def main():
     parser.add_argument('--errors-only', '-e', action='store_true', help='Only show errors')
     parser.add_argument('--continue-on-error', '-c', action='store_true', help='Continue despite build or installation errors')
     parser.add_argument('--skip-build', '-s', action='store_true', help='Skip building and testing after updating requirements')
+    parser.add_argument('--skip-conda-update', action='store_true', help='Skip updating Anaconda/Miniconda')
     parser.add_argument('--config', type=str, help='Path to custom config file')
-    parser.add_argument('--no-conda-update', action='store_true', help='Skip updating Anaconda/Miniconda')
     args = parser.parse_args()
     
     # Configure logging based on verbosity
@@ -2390,14 +2427,12 @@ def main():
     # Fix regex escape sequences
     fix_regex_escape_sequences()
     
+    # Update Anaconda/Miniconda if installed and not skipped
+    if not args.skip_conda_update:
+        update_conda_installation()
+    
     # Print system info
     print_system_info()
-    
-    # Update Anaconda/Miniconda first (if available and not skipped)
-    if not args.no_conda_update:
-        updated = update_conda_installations(quiet_mode=args.quiet or args.errors_only)
-        if updated and not (args.quiet or args.errors_only):
-            logging.info("Successfully updated conda installations")
     
     # Dynamically fetch package repositories
     dynamic_fetch_package_repositories()
@@ -2426,7 +2461,7 @@ def main():
             "prompt_before_rebuild": False,  # Set to True to prompt before rebuilding
             "quiet_mode": args.quiet or args.errors_only,
             "continue_on_build_error": args.continue_on_error or True,
-            "update_conda_first": not args.no_conda_update
+            "update_conda": not args.skip_conda_update
         }
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
         with open(config_path, 'w') as f:
@@ -2440,7 +2475,8 @@ def main():
     if args.skip_build:
         config["auto_rebuild"] = False
         config["auto_test"] = False
-    config["update_conda_first"] = not args.no_conda_update
+    if args.skip_conda_update:
+        config["update_conda"] = False
     
     # Save updated config
     with open(config_path, 'w') as f:
@@ -2562,8 +2598,7 @@ cat > ~/.config/smart-update-reqs/config.json << 'EOF'
   "auto_test": true,
   "rebuild_timeout": 600,
   "quiet_mode": false,
-  "continue_on_build_error": true,
-  "update_conda_first": true
+  "continue_on_build_error": true
 }
 EOF
 
