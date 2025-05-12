@@ -1,4 +1,75 @@
-#!/bin/bash
+def update_conda_installations(quiet_mode=False):
+    """Update Anaconda and Miniconda installations if they exist."""
+    conda_paths = [
+        os.path.expanduser("~/anaconda3/bin/conda"),
+        os.path.expanduser("~/miniconda3/bin/conda"),
+        # Try to find conda in PATH
+        "conda"
+    ]
+    
+    updated = False
+    
+    for conda_path in conda_paths:
+        try:
+            # Check if this conda exists
+            if conda_path != "conda":
+                if not os.path.exists(conda_path):
+                    continue
+            
+            # Try to run conda info to verify it works
+            result = subprocess.run(
+                [conda_path, "info", "--json"],
+                capture_output=True, text=True
+            )
+            
+            if result.returncode != 0:
+                continue
+            
+            # Get conda info
+            info = json.loads(result.stdout)
+            conda_version = info.get("conda_version")
+            root_prefix = info.get("root_prefix")
+            
+            if not quiet_mode:
+                logging.info(f"Updating conda installation at {root_prefix} (version {conda_version})")
+            
+            # Update conda itself first
+            update_cmd = [conda_path, "update", "-n", "base", "conda", "-y"]
+            if quiet_mode:
+                update_cmd.append("-q")
+            
+            result = subprocess.run(
+                update_cmd,
+                capture_output=True, text=True
+            )
+            
+            if result.returncode == 0:
+                if not quiet_mode:
+                    logging.info(f"Successfully updated conda at {root_prefix}")
+                
+                # Update common essential packages
+                essentials_cmd = [conda_path, "update", "-n", "base", "-y", "python", "pip"]
+                if quiet_mode:
+                    essentials_cmd.append("-q")
+                
+                result = subprocess.run(
+                    essentials_cmd,
+                    capture_output=True, text=True
+                )
+                
+                if result.returncode == 0 and not quiet_mode:
+                    logging.info(f"Successfully updated python and pip in base environment")
+                
+                updated = True
+            else:
+                error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
+                if not quiet_mode:
+                    logging.error(f"Failed to update conda: {error_msg}")
+        except Exception as e:
+            if not quiet_mode:
+                logging.error(f"Error updating conda: {e}")
+    
+    return updated#!/bin/bash
 # Smart Requirements Updater Installation Script
 
 echo "Installing Smart Requirements Updater..."
@@ -2291,6 +2362,7 @@ def main():
     parser.add_argument('--continue-on-error', '-c', action='store_true', help='Continue despite build or installation errors')
     parser.add_argument('--skip-build', '-s', action='store_true', help='Skip building and testing after updating requirements')
     parser.add_argument('--config', type=str, help='Path to custom config file')
+    parser.add_argument('--no-conda-update', action='store_true', help='Skip updating Anaconda/Miniconda')
     args = parser.parse_args()
     
     # Configure logging based on verbosity
@@ -2321,6 +2393,12 @@ def main():
     # Print system info
     print_system_info()
     
+    # Update Anaconda/Miniconda first (if available and not skipped)
+    if not args.no_conda_update:
+        updated = update_conda_installations(quiet_mode=args.quiet or args.errors_only)
+        if updated and not (args.quiet or args.errors_only):
+            logging.info("Successfully updated conda installations")
+    
     # Dynamically fetch package repositories
     dynamic_fetch_package_repositories()
     
@@ -2347,7 +2425,8 @@ def main():
             "rebuild_timeout": 600,  # 10 minutes timeout for rebuilds
             "prompt_before_rebuild": False,  # Set to True to prompt before rebuilding
             "quiet_mode": args.quiet or args.errors_only,
-            "continue_on_build_error": args.continue_on_error or True
+            "continue_on_build_error": args.continue_on_error or True,
+            "update_conda_first": not args.no_conda_update
         }
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
         with open(config_path, 'w') as f:
@@ -2361,6 +2440,7 @@ def main():
     if args.skip_build:
         config["auto_rebuild"] = False
         config["auto_test"] = False
+    config["update_conda_first"] = not args.no_conda_update
     
     # Save updated config
     with open(config_path, 'w') as f:
@@ -2482,7 +2562,8 @@ cat > ~/.config/smart-update-reqs/config.json << 'EOF'
   "auto_test": true,
   "rebuild_timeout": 600,
   "quiet_mode": false,
-  "continue_on_build_error": true
+  "continue_on_build_error": true,
+  "update_conda_first": true
 }
 EOF
 
