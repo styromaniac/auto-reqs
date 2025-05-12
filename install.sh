@@ -1,151 +1,55 @@
-def update_conda_installation():
-    """Update Anaconda/Miniconda installation if available."""
-    logging.info("Checking for Anaconda/Miniconda installations to update...")
-    
-    # Possible locations for conda executables
-    conda_paths = [
-        os.path.expanduser("~/anaconda3/bin/conda"),
-        os.path.expanduser("~/miniconda3/bin/conda"),
-        "/opt/anaconda3/bin/conda",
-        "/opt/miniconda3/bin/conda",
-        # Windows paths
-        os.path.expanduser("~/anaconda3/Scripts/conda.exe"),
-        os.path.expanduser("~/miniconda3/Scripts/conda.exe")
-    ]
-    
-    # Find conda executable
-    conda_exe = None
-    for path in conda_paths:
-        if os.path.exists(path):
-            conda_exe = path
-            break
-    
-    # If conda not found in common locations, try from PATH
-    if not conda_exe:
-        try:
-            result = subprocess.run(["which", "conda"], capture_output=True, text=True)
-            if result.returncode == 0 and result.stdout.strip():
-                conda_exe = result.stdout.strip()
-        except:
-            # On Windows, try where instead of which
-            try:
-                result = subprocess.run(["where", "conda"], capture_output=True, text=True)
-                if result.returncode == 0 and result.stdout.strip():
-                    # Take the first line if multiple results
-                    conda_exe = result.stdout.strip().split('\n')[0]
-            except:
-                pass
-    
-    if not conda_exe:
-        logging.info("No Anaconda/Miniconda installation found.")
-        return False
-    
-    logging.info(f"Found conda at: {conda_exe}")
-    
-    # Update conda itself first
-    try:
-        logging.info("Updating conda...")
-        result = subprocess.run([conda_exe, "update", "-n", "base", "conda", "-y"], 
-                                capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            logging.info("Successfully updated conda.")
-        else:
-            logging.warning(f"Failed to update conda: {result.stderr}")
-            return False
-    except Exception as e:
-        logging.error(f"Error updating conda: {e}")
-        return False
-    
-    # Update core packages
-    try:
-        logging.info("Updating core Anaconda/Miniconda packages...")
-        core_packages = [
-            "python", "pip", "setuptools", "wheel", "conda-build", 
-            "numpy", "scipy", "pandas", "matplotlib"
-        ]
-        
-        result = subprocess.run([conda_exe, "update", "-n", "base", "--all", "-y"], 
-                               capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            logging.info("Successfully updated all base packages.")
-        else:
-            # Try updating just the core packages
-            logging.warning("Failed to update all packages. Trying core packages only...")
-            result = subprocess.run([conda_exe, "update", "-n", "base"] + core_packages + ["-y"], 
-                                   capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                logging.info("Successfully updated core packages.")
-            else:
-                logging.warning(f"Failed to update core packages: {result.stderr}")
-                return False
-    except Exception as e:
-        logging.error(f"Error updating core packages: {e}")
-        return False
-    
-    # Update conda-forge channel packages if available
-    try:
-        logging.info("Checking for conda-forge channel...")
-        result = subprocess.run([conda_exe, "config", "--show", "channels"], 
-                               capture_output=True, text=True)
-        
-        if "conda-forge" in result.stdout:
-            logging.info("Updating conda-forge packages...")
-            result = subprocess.run([conda_exe, "update", "-n", "base", "-c", "conda-forge", "--all", "-y"], 
-                                   capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                logging.info("Successfully updated conda-forge packages.")
-            else:
-                logging.warning(f"Failed to update conda-forge packages: {result.stderr}")
-        else:
-            logging.info("conda-forge channel not found in configuration.")
-    except Exception as e:
-        logging.error(f"Error updating conda-forge packages: {e}")
-    
-    logging.info("Anaconda/Miniconda update completed.")
-    return True#!/bin/bash
-# Smart Requirements Updater Installation Script
-
-echo "Installing Smart Requirements Updater..."
+#!/bin/bash
+# enhanced-smart-update-reqs.sh - A script that implements a five-step process:
+# 1. conda update
+# 2. backup requirements files
+# 3. update requirements files
+# 4. build projects
+# 5. provide a signal system for startup scripts
 
 # Create directories
 mkdir -p ~/.local/bin
 mkdir -p ~/.config/systemd/user
 mkdir -p ~/.config/smart-update-reqs
+mkdir -p ~/.config/smart-update-reqs/signals
+mkdir -p ~/.config/smart-update-reqs/backups
 
 # Create the main Python script
 cat > ~/.local/bin/smart_update_requirements.py << 'EOF'
 #!/usr/bin/env python3
 """
-Smart Requirements Updater
-Intelligently scans for Python projects and updates dependencies using dynamic analysis.
+Enhanced Smart Requirements Updater
+Implements a five-step workflow:
+1. conda update - Update conda environments
+2. backup requirements files - Create backups of all requirements files
+3. update requirements files - Update package specifications
+4. build projects - Rebuild projects after updates
+5. provide a signal system - Signal when updates occur for startup scripts
 """
 import os
 import re
 import sys
 import json
+import shutil
 import logging
 import subprocess
 import tempfile
 import time
-import ast
-import inspect
-import importlib
-import pkgutil
+import glob
+from pathlib import Path
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import urllib.request
+import urllib.error
 import pkg_resources
 import platform
 import hashlib
-from pathlib import Path
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
-import urllib.request
-import urllib.error
+import signal
 
 # Configure logging
 LOG_FILE = os.path.expanduser("~/.config/smart-update-reqs/update_log.txt")
+SIGNAL_DIR = os.path.expanduser("~/.config/smart-update-reqs/signals")
+BACKUP_DIR = os.path.expanduser("~/.config/smart-update-reqs/backups")
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -155,82 +59,12 @@ logging.basicConfig(
     ]
 )
 
-def fix_regex_escape_sequences():
-    """Fix invalid escape sequences in regex patterns throughout the script."""
-    # This is a global fix for all regex patterns
-    import re
-    
-    # Get all the original regex functions/methods
-    original_compile = re.compile
-    original_search = re.search
-    original_findall = re.findall
-    original_match = re.match
-    original_finditer = re.finditer
-    original_sub = re.sub
-    original_subn = re.subn
-    original_split = re.split
-    
-    # Create wrapper functions that automatically convert patterns to raw strings
-    def safe_compile(pattern, *args, **kwargs):
-        if isinstance(pattern, str) and not pattern.startswith('r'):
-            pattern = pattern.replace('\\', '\\\\')
-        return original_compile(pattern, *args, **kwargs)
-    
-    def safe_search(pattern, *args, **kwargs):
-        if isinstance(pattern, str) and not pattern.startswith('r'):
-            pattern = pattern.replace('\\', '\\\\')
-        return original_search(pattern, *args, **kwargs)
-    
-    def safe_findall(pattern, *args, **kwargs):
-        if isinstance(pattern, str) and not pattern.startswith('r'):
-            pattern = pattern.replace('\\', '\\\\')
-        return original_findall(pattern, *args, **kwargs)
-    
-    def safe_match(pattern, *args, **kwargs):
-        if isinstance(pattern, str) and not pattern.startswith('r'):
-            pattern = pattern.replace('\\', '\\\\')
-        return original_match(pattern, *args, **kwargs)
-    
-    def safe_finditer(pattern, *args, **kwargs):
-        if isinstance(pattern, str) and not pattern.startswith('r'):
-            pattern = pattern.replace('\\', '\\\\')
-        return original_finditer(pattern, *args, **kwargs)
-    
-    def safe_sub(pattern, *args, **kwargs):
-        if isinstance(pattern, str) and not pattern.startswith('r'):
-            pattern = pattern.replace('\\', '\\\\')
-        return original_sub(pattern, *args, **kwargs)
-    
-    def safe_subn(pattern, *args, **kwargs):
-        if isinstance(pattern, str) and not pattern.startswith('r'):
-            pattern = pattern.replace('\\', '\\\\')
-        return original_subn(pattern, *args, **kwargs)
-    
-    def safe_split(pattern, *args, **kwargs):
-        if isinstance(pattern, str) and not pattern.startswith('r'):
-            pattern = pattern.replace('\\', '\\\\')
-        return original_split(pattern, *args, **kwargs)
-    
-    # Replace the original functions with our safe versions
-    re.compile = safe_compile
-    re.search = safe_search
-    re.findall = safe_findall
-    re.match = safe_match
-    re.finditer = safe_finditer
-    re.sub = safe_sub
-    re.subn = safe_subn
-    re.split = safe_split
-    
-    logging.info("Fixed regex escape sequences for safer pattern matching")
-    return True
-
 # Try to import additional packages, installing them if necessary
 def ensure_package(package_name):
     try:
         return __import__(package_name)
     except ImportError:
         try:
-            logging.info(f"Installing {package_name} for enhanced functionality...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", package_name])
             return __import__(package_name)
         except:
@@ -240,1103 +74,38 @@ def ensure_package(package_name):
 # Import optional packages for enhanced functionality
 requests = ensure_package("requests")
 packaging_version = ensure_package("packaging.version")
-packaging_specifier = ensure_package("packaging.specifiers")
 safety = ensure_package("safety")
-pipdeptree = ensure_package("pipdeptree")
-importlib_metadata = ensure_package("importlib_metadata")
+packaging = ensure_package("packaging")
+
+# Make sure backup and signal directories exist
+os.makedirs(BACKUP_DIR, exist_ok=True)
+os.makedirs(SIGNAL_DIR, exist_ok=True)
+
+# Knowledge base of manual package replacements (fallback for when automatic detection fails)
+FALLBACK_PACKAGE_REPLACEMENTS = {
+    "pyaes": "pycryptodome",
+    "pycrypto": "pycryptodome",
+    "flask-script": "flask>=2.0.0",
+    "django-smartpages": "django-flatpages",
+    "python-memcached": "pymemcache",
+    "mock": "pytest-mock",
+    "nose": "pytest",
+    "unittest2": "pytest",
+}
 
 # Initialize dynamic package knowledge base
-KNOWLEDGE_BASE_FILE = os.path.expanduser("~/.config/smart-update-reqs/package_knowledge.json")
-KNOWLEDGE_BASE = {}
-
-# Initialize compatibility dictionary if needed
-def initialize_knowledge_base_keys():
-    """Make sure all required keys exist in the knowledge base."""
-    global KNOWLEDGE_BASE
-    required_keys = [
-        "replacements", "compatibility", "api_signatures", "deprecations",
-        "vulnerabilities", "popularity_scores", "update_history", "usage_signatures"
-    ]
-    
-    for key in required_keys:
-        if key not in KNOWLEDGE_BASE:
-            KNOWLEDGE_BASE[key] = {}
-    
-    if "last_update" not in KNOWLEDGE_BASE:
-        KNOWLEDGE_BASE["last_update"] = datetime.now().isoformat()
-    
-    return True
-
-# Load the knowledge base
-if os.path.exists(KNOWLEDGE_BASE_FILE):
-    with open(KNOWLEDGE_BASE_FILE, 'r') as f:
+PACKAGE_KNOWLEDGE_BASE_FILE = os.path.expanduser("~/.config/smart-update-reqs/package_knowledge.json")
+if os.path.exists(PACKAGE_KNOWLEDGE_BASE_FILE):
+    with open(PACKAGE_KNOWLEDGE_BASE_FILE, 'r') as f:
         try:
-            KNOWLEDGE_BASE = json.load(f)
-            # Ensure all required keys exist
-            for key in ["replacements", "compatibility", "api_signatures", "deprecations", 
-                       "vulnerabilities", "popularity_scores", "update_history"]:
-                if key not in KNOWLEDGE_BASE:
-                    KNOWLEDGE_BASE[key] = {}
-            if "last_update" not in KNOWLEDGE_BASE:
-                KNOWLEDGE_BASE["last_update"] = datetime.now().isoformat()
+            PACKAGE_KNOWLEDGE_BASE = json.load(f)
         except json.JSONDecodeError:
-            KNOWLEDGE_BASE = {
-                "replacements": {},
-                "compatibility": {},
-                "api_signatures": {},
-                "deprecations": {},
-                "vulnerabilities": {},
-                "popularity_scores": {},
-                "update_history": {},
-                "last_update": datetime.now().isoformat()
-            }
+            PACKAGE_KNOWLEDGE_BASE = {"replacements": {}, "deprecations": {}, "vulnerabilities": {}}
 else:
-    KNOWLEDGE_BASE = {
-        "replacements": {},
-        "compatibility": {},
-        "api_signatures": {},
-        "deprecations": {},
-        "vulnerabilities": {},
-        "popularity_scores": {},
-        "update_history": {},
-        "last_update": datetime.now().isoformat()
-    }
-
-# Package repositories to check
-PACKAGE_REPOSITORIES = [
-    {"name": "PyPI", "url": "https://pypi.org/pypi/{package}/json"},
-    {"name": "conda-forge", "url": "https://conda.anaconda.org/conda-forge/{package}/json"}
-]
-
-class ModuleAPIAnalyzer:
-    """Analyze module API by inspecting imports and usage patterns."""
-    
-    def __init__(self):
-        self.api_cache = {}
-    
-    def extract_module_api(self, module_name):
-        """Extract the API of a module by analyzing imports and usage."""
-        if module_name in self.api_cache:
-            return self.api_cache[module_name]
-            
-        api_info = {
-            "objects": {},
-            "classes": {},
-            "functions": {},
-            "constants": {}
-        }
-        
-        try:
-            # Try to import the module
-            module = importlib.import_module(module_name)
-            
-            # Extract module attributes
-            for name in dir(module):
-                if name.startswith('_') and name != '__all__':
-                    continue
-                    
-                try:
-                    attr = getattr(module, name)
-                    
-                    # Classify the attribute
-                    if inspect.isclass(attr):
-                        methods = {}
-                        for method_name in dir(attr):
-                            if not method_name.startswith('_'):
-                                method = getattr(attr, method_name)
-                                if inspect.isfunction(method) or inspect.ismethod(method):
-                                    try:
-                                        sig = str(inspect.signature(method))
-                                        methods[method_name] = sig
-                                    except:
-                                        methods[method_name] = "(?)"
-                        
-                        api_info["classes"][name] = {
-                            "methods": methods,
-                            "bases": [base.__name__ for base in attr.__mro__[1:] if base.__name__ != 'object']
-                        }
-                    elif inspect.isfunction(attr) or inspect.ismethod(attr):
-                        try:
-                            sig = str(inspect.signature(attr))
-                            api_info["functions"][name] = sig
-                        except:
-                            api_info["functions"][name] = "(?)"
-                    else:
-                        # Consider it a constant or other object
-                        api_info["objects"][name] = type(attr).__name__
-                except:
-                    pass
-            
-            # Cache the result
-            self.api_cache[module_name] = api_info
-            return api_info
-        except ImportError:
-            logging.debug(f"Could not import module {module_name} for API analysis")
-            return api_info
-        except Exception as e:
-            logging.debug(f"Error analyzing API for {module_name}: {e}")
-            return api_info
-    
-    def compare_apis(self, old_api, new_api):
-        """
-        Compare two APIs and determine compatibility.
-        Returns compatibility score and breaking changes.
-        """
-        if not old_api or not new_api:
-            return 0.0, ["Could not analyze APIs"]
-            
-        breaking_changes = []
-        compat_items = 0
-        total_items = 0
-        
-        # Check functions
-        for func_name, old_sig in old_api.get("functions", {}).items():
-            total_items += 1
-            if func_name in new_api.get("functions", {}):
-                compat_items += 1
-                new_sig = new_api["functions"][func_name]
-                
-                # Check for signature changes that might break backwards compatibility
-                if old_sig != "(?)" and new_sig != "(?)" and old_sig != new_sig:
-                    # Simple heuristic: if parameter count decreased or names changed
-                    old_params = old_sig.count(',')
-                    new_params = new_sig.count(',')
-                    
-                    if new_params < old_params and '=' not in new_sig:
-                        breaking_changes.append(f"Function {func_name}: parameter count reduced from {old_params+1} to {new_params+1}")
-            else:
-                breaking_changes.append(f"Function removed: {func_name}{old_sig}")
-        
-        # Check classes
-        for class_name, old_class_info in old_api.get("classes", {}).items():
-            if class_name in new_api.get("classes", {}):
-                new_class_info = new_api["classes"][class_name]
-                
-                # Check methods
-                for method_name, old_method_sig in old_class_info.get("methods", {}).items():
-                    total_items += 1
-                    if method_name in new_class_info.get("methods", {}):
-                        compat_items += 1
-                        new_method_sig = new_class_info["methods"][method_name]
-                        
-                        # Check for signature changes
-                        if old_method_sig != "(?)" and new_method_sig != "(?)" and old_method_sig != new_method_sig:
-                            old_params = old_method_sig.count(',')
-                            new_params = new_method_sig.count(',')
-                            
-                            if new_params < old_params and '=' not in new_method_sig:
-                                breaking_changes.append(f"Method {class_name}.{method_name}: parameter count reduced from {old_params+1} to {new_params+1}")
-                    else:
-                        breaking_changes.append(f"Method removed: {class_name}.{method_name}{old_method_sig}")
-            else:
-                # Class removed
-                total_items += 1 + len(old_class_info.get("methods", {}))
-                breaking_changes.append(f"Class removed: {class_name} with {len(old_class_info.get('methods', {}))} methods")
-        
-        # Calculate compatibility score
-        compat_score = compat_items / max(total_items, 1)
-        
-        return compat_score, breaking_changes
-
-class CodeUsageAnalyzer:
-    """Analyze Python code to detect how packages are used."""
-    
-    def __init__(self):
-        self.import_cache = {}
-        
-    def analyze_file(self, filepath):
-        """Analyze a Python file to detect imports and usage patterns."""
-        try:
-            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-                
-            # Parse the AST
-            tree = ast.parse(content)
-            
-            # Extract imports
-            imports = self._extract_imports(tree)
-            
-            # Extract usage patterns
-            usage_patterns = self._extract_usage_patterns(tree, imports)
-            
-            return imports, usage_patterns
-        except Exception as e:
-            logging.debug(f"Error analyzing file {filepath}: {e}")
-            return {}, {}
-    
-    def _extract_imports(self, tree):
-        """Extract all imports from an AST."""
-        imports = {}
-        
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for name in node.names:
-                    imports[name.name] = {"alias": name.asname, "from": None, "items": ["*"]}
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                for name in node.names:
-                    if module not in imports:
-                        imports[module] = {"alias": None, "from": True, "items": []}
-                    
-                    if name.name == "*":
-                        imports[module]["items"] = ["*"]
-                    else:
-                        imports[module]["items"].append((name.name, name.asname))
-        
-        return imports
-    
-    def _extract_usage_patterns(self, tree, imports):
-        """Extract usage patterns from an AST based on imports."""
-        usage = {}
-        
-        # Create a map of all imported names to their modules
-        name_to_module = {}
-        for module, info in imports.items():
-            if info["alias"]:
-                name_to_module[info["alias"]] = module
-            else:
-                name_to_module[module] = module
-            
-            # Add from imports
-            if info["from"]:
-                for item in info["items"]:
-                    if item == "*":
-                        continue
-                    
-                    name, alias = item if isinstance(item, tuple) else (item, None)
-                    if alias:
-                        name_to_module[alias] = (module, name)
-                    else:
-                        name_to_module[name] = (module, name)
-        
-        # Analyze attribute access and function calls
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                base_name = node.value.id
-                if base_name in name_to_module:
-                    module = name_to_module[base_name]
-                    if isinstance(module, tuple):
-                        # Handle from import
-                        parent_module, item = module
-                        if parent_module not in usage:
-                            usage[parent_module] = {"attributes": {}, "calls": {}}
-                        
-                        attr_access = f"{item}.{node.attr}"
-                        if attr_access not in usage[parent_module]["attributes"]:
-                            usage[parent_module]["attributes"][attr_access] = 0
-                        usage[parent_module]["attributes"][attr_access] += 1
-                    else:
-                        # Handle regular import
-                        if module not in usage:
-                            usage[module] = {"attributes": {}, "calls": {}}
-                        
-                        if node.attr not in usage[module]["attributes"]:
-                            usage[module]["attributes"][node.attr] = 0
-                        usage[module]["attributes"][node.attr] += 1
-            
-            # Analyze function calls
-            elif isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name):
-                    # Direct function call
-                    func_name = node.func.id
-                    if func_name in name_to_module:
-                        module = name_to_module[func_name]
-                        if isinstance(module, tuple):
-                            parent_module, item = module
-                            if parent_module not in usage:
-                                usage[parent_module] = {"attributes": {}, "calls": {}}
-                            
-                            if item not in usage[parent_module]["calls"]:
-                                usage[parent_module]["calls"][item] = 0
-                            usage[parent_module]["calls"][item] += 1
-                elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-                    # Method call
-                    base_name = node.func.value.id
-                    if base_name in name_to_module:
-                        module = name_to_module[base_name]
-                        if isinstance(module, tuple):
-                            parent_module, item = module
-                            if parent_module not in usage:
-                                usage[parent_module] = {"attributes": {}, "calls": {}}
-                            
-                            method_call = f"{item}.{node.func.attr}"
-                            if method_call not in usage[parent_module]["calls"]:
-                                usage[parent_module]["calls"][method_call] = 0
-                            usage[parent_module]["calls"][method_call] += 1
-                        else:
-                            if module not in usage:
-                                usage[module] = {"attributes": {}, "calls": {}}
-                            
-                            if node.func.attr not in usage[module]["calls"]:
-                                usage[module]["calls"][node.func.attr] = 0
-                            usage[module]["calls"][node.func.attr] += 1
-        
-        return usage
-    
-    def analyze_project(self, project_dir):
-        """Analyze all Python files in a project to detect package usage."""
-        all_imports = {}
-        all_usage = {}
-        
-        for root, _, files in os.walk(project_dir):
-            for file in files:
-                if file.endswith('.py'):
-                    filepath = os.path.join(root, file)
-                    imports, usage = self.analyze_file(filepath)
-                    
-                    # Merge imports
-                    for module, info in imports.items():
-                        if module not in all_imports:
-                            all_imports[module] = info
-                        else:
-                            # Merge items
-                            if info["items"] == ["*"]:
-                                all_imports[module]["items"] = ["*"]
-                            elif all_imports[module]["items"] != ["*"]:
-                                for item in info["items"]:
-                                    if item not in all_imports[module]["items"]:
-                                        all_imports[module]["items"].append(item)
-                    
-                    # Merge usage
-                    for module, patterns in usage.items():
-                        if module not in all_usage:
-                            all_usage[module] = {"attributes": {}, "calls": {}}
-                        
-                        # Merge attributes
-                        for attr, count in patterns["attributes"].items():
-                            if attr not in all_usage[module]["attributes"]:
-                                all_usage[module]["attributes"][attr] = 0
-                            all_usage[module]["attributes"][attr] += count
-                        
-                        # Merge calls
-                        for call, count in patterns["calls"].items():
-                            if call not in all_usage[module]["calls"]:
-                                all_usage[module]["calls"][call] = 0
-                            all_usage[module]["calls"][call] += count
-        
-        return all_imports, all_usage
-    
-    def get_core_usage_signature(self, usage):
-        """Extract a core usage signature from usage patterns."""
-        signature = {"modules": {}}
-        
-        for module, patterns in usage.items():
-            # Just take the top 10 most frequently used attributes and calls
-            top_attrs = sorted(patterns["attributes"].items(), key=lambda x: x[1], reverse=True)[:10]
-            top_calls = sorted(patterns["calls"].items(), key=lambda x: x[1], reverse=True)[:10]
-            
-            signature["modules"][module] = {
-                "top_attributes": [attr for attr, _ in top_attrs],
-                "top_calls": [call for call, _ in top_calls]
-            }
-        
-        return signature
-    
-    def compare_usage_signatures(self, sig1, sig2):
-        """
-        Compare two usage signatures for compatibility.
-        Returns compatibility score (0.0-1.0) and required changes.
-        """
-        if not sig1 or not sig2:
-            return 0.0, ["No usage signatures to compare"]
-            
-        modules1 = set(sig1.get("modules", {}).keys())
-        modules2 = set(sig2.get("modules", {}).keys())
-        
-        # Find modules that exist in both signatures
-        common_modules = modules1.intersection(modules2)
-        
-        if not common_modules:
-            return 0.0, ["No common modules found"]
-        
-        compatibility_scores = []
-        required_changes = []
-        
-        for module in common_modules:
-            module_sig1 = sig1["modules"][module]
-            module_sig2 = sig2["modules"][module]
-            
-            # Check attributes
-            attrs1 = set(module_sig1.get("top_attributes", []))
-            attrs2 = set(module_sig2.get("top_attributes", []))
-            
-            common_attrs = attrs1.intersection(attrs2)
-            missing_attrs = attrs1 - attrs2
-            
-            attr_score = len(common_attrs) / max(len(attrs1), 1)
-            
-            # Check function calls
-            calls1 = set(module_sig1.get("top_calls", []))
-            calls2 = set(module_sig2.get("top_calls", []))
-            
-            common_calls = calls1.intersection(calls2)
-            missing_calls = calls1 - calls2
-            
-            call_score = len(common_calls) / max(len(calls1), 1)
-            
-            # Calculate module compatibility score
-            module_score = (attr_score + call_score) / 2
-            compatibility_scores.append(module_score)
-            
-            # Record required changes
-            if missing_attrs:
-                required_changes.append(f"Module {module} missing attributes: {', '.join(missing_attrs)}")
-            
-            if missing_calls:
-                required_changes.append(f"Module {module} missing function/method calls: {', '.join(missing_calls)}")
-        
-        # Calculate overall compatibility score
-        overall_score = sum(compatibility_scores) / len(compatibility_scores)
-        
-        return overall_score, required_changes
-
-class DependencyResolver:
-    """Analyze and resolve package dependencies."""
-    
-    def __init__(self):
-        self.dep_cache = {}
-        
-    def get_package_dependencies(self, package_name, version=None):
-        """Get the dependencies of a package."""
-        cache_key = f"{package_name}:{version or 'latest'}"
-        if cache_key in self.dep_cache:
-            return self.dep_cache[cache_key]
-        
-        deps = {}
-        
-        # Try to get from PyPI
-        if requests:
-            try:
-                if version:
-                    url = f"https://pypi.org/pypi/{package_name}/{version}/json"
-                else:
-                    url = f"https://pypi.org/pypi/{package_name}/json"
-                
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    requires_dist = data.get('info', {}).get('requires_dist', []) or []
-                    
-                    for req in requires_dist:
-                        # Parse requirement
-                        req = req.split(';')[0].strip()  # Remove environment markers
-                        if not req:
-                            continue
-                            
-                        parts = re.split(r'(==|>=|<=|!=|~=|>|<)', req, 1)
-                        
-                        if len(parts) >= 3:
-                            dep_name = parts[0].strip().lower()
-                            constraint = parts[1] + parts[2].strip()
-                            deps[dep_name] = constraint
-                        else:
-                            deps[req.strip().lower()] = ""
-                            
-                    self.dep_cache[cache_key] = deps
-                    return deps
-            except Exception as e:
-                logging.debug(f"Error getting dependencies for {package_name} from PyPI: {e}")
-        
-        # Try to use importlib_metadata as fallback
-        if importlib_metadata:
-            try:
-                if version:
-                    # Can't easily get deps for specific version without installing
-                    pass
-                else:
-                    dist = importlib_metadata.distribution(package_name)
-                    for req in dist.requires or []:
-                        req_str = str(req)
-                        parts = re.split(r'(==|>=|<=|!=|~=|>|<)', req_str, 1)
-                        
-                        if len(parts) >= 3:
-                            dep_name = parts[0].strip().lower()
-                            constraint = parts[1] + parts[2].strip()
-                            deps[dep_name] = constraint
-                        else:
-                            deps[req_str.strip().lower()] = ""
-                    
-                    self.dep_cache[cache_key] = deps
-                    return deps
-            except Exception as e:
-                logging.debug(f"Error getting dependencies for {package_name} from importlib_metadata: {e}")
-        
-        # Use pipdeptree as last resort
-        if pipdeptree:
-            try:
-                result = subprocess.run(
-                    [sys.executable, '-m', 'pipdeptree', '-j'],
-                    capture_output=True, text=True
-                )
-                
-                if result.returncode == 0:
-                    tree = json.loads(result.stdout)
-                    
-                    for pkg in tree:
-                        if pkg.get('package', {}).get('key', '').lower() == package_name.lower():
-                            for dep in pkg.get('dependencies', []):
-                                dep_name = dep.get('package_name', '').lower()
-                                dep_version = dep.get('installed_version', '')
-                                if dep_name:
-                                    deps[dep_name] = f"=={dep_version}" if dep_version else ""
-                            
-                            self.dep_cache[cache_key] = deps
-                            return deps
-            except Exception as e:
-                logging.debug(f"Error getting dependencies for {package_name} from pipdeptree: {e}")
-        
-        self.dep_cache[cache_key] = deps
-        return deps
-    
-    def check_compatibility(self, package1, version1, package2, version2):
-        """
-        Check if two packages with their versions are compatible.
-        Returns compatibility score (0.0-1.0) and issues.
-        """
-        deps1 = self.get_package_dependencies(package1, version1)
-        deps2 = self.get_package_dependencies(package2, version2)
-        
-        if not deps1 and not deps2:
-            return 1.0, []  # No dependencies to check
-        
-        issues = []
-        
-        # Check if package2 satisfies all dependencies of package1
-        for dep_name, constraint1 in deps1.items():
-            if dep_name == package2.lower():
-                # Direct dependency on the replacement
-                if constraint1 and version2:
-                    # Check if version2 satisfies constraint1
-                    if packaging_specifier and packaging_version:
-                        try:
-                            spec = packaging_specifier.SpecifierSet(constraint1)
-                            ver = packaging_version.Version(version2)
-                            
-                            if not spec.contains(ver):
-                                issues.append(f"{package1} requires {dep_name}{constraint1}, but {package2} is version {version2}")
-                        except:
-                            # Can't check compatibility
-                            issues.append(f"Could not verify if {package2} {version2} satisfies {dep_name}{constraint1}")
-        
-        # Check for conflicting dependencies
-        common_deps = set(deps1.keys()).intersection(set(deps2.keys()))
-        for dep in common_deps:
-            constraint1 = deps1[dep]
-            constraint2 = deps2[dep]
-            
-            if constraint1 and constraint2 and constraint1 != constraint2:
-                issues.append(f"Dependency conflict: {package1} requires {dep}{constraint1}, but {package2} requires {dep}{constraint2}")
-        
-        # Calculate compatibility score
-        if not issues:
-            return 1.0, []
-        else:
-            score = 1.0 - (len(issues) / max(len(deps1) + len(common_deps), 1))
-            return max(0.0, score), issues
-
-class EnvironmentManager:
-    """Detect and manage Python environments for projects."""
-    
-    def __init__(self):
-        self.env_cache = {}
-    
-    def detect_environment(self, project_dir):
-        """
-        Detect the type of environment used by a project.
-        Returns a dict with environment information.
-        """
-        if project_dir in self.env_cache:
-            return self.env_cache[project_dir]
-        
-        env_info = {
-            "type": None,          # venv, conda, poetry, pipenv, system
-            "path": None,          # Path to the environment
-            "python_path": None,   # Path to the Python executable
-            "package_manager": None  # pip, conda, poetry, pipenv
-        }
-        
-        # Check for virtual environment in project directory
-        venv_dirs = [
-            os.path.join(project_dir, "venv"),
-            os.path.join(project_dir, ".venv"),
-            os.path.join(project_dir, "env"),
-            os.path.join(project_dir, ".env")
-        ]
-        
-        for venv_dir in venv_dirs:
-            if os.path.exists(venv_dir) and os.path.isdir(venv_dir):
-                # Found a potential virtual environment
-                if os.path.exists(os.path.join(venv_dir, "bin", "python")) or \
-                   os.path.exists(os.path.join(venv_dir, "Scripts", "python.exe")):
-                    env_info["type"] = "venv"
-                    env_info["path"] = venv_dir
-                    
-                    # Determine python path
-                    if os.path.exists(os.path.join(venv_dir, "bin", "python")):
-                        env_info["python_path"] = os.path.join(venv_dir, "bin", "python")
-                    else:
-                        env_info["python_path"] = os.path.join(venv_dir, "Scripts", "python.exe")
-                    
-                    env_info["package_manager"] = "pip"
-                    break
-        
-        # Check for conda environment
-        conda_files = [
-            os.path.join(project_dir, "environment.yml"),
-            os.path.join(project_dir, "environment.yaml"),
-            os.path.join(project_dir, "conda-environment.yml"),
-            os.path.join(project_dir, "conda.yml")
-        ]
-        
-        for conda_file in conda_files:
-            if os.path.exists(conda_file):
-                env_info["type"] = "conda"
-                
-                # Try to extract environment name from the file
-                try:
-                    with open(conda_file, 'r') as f:
-                        content = f.read()
-                        # Extract name from the conda environment file
-                        match = re.search(r'name:\s*([^\s]+)', content)
-                        if match:
-                            env_name = match.group(1)
-                            env_info["name"] = env_name
-                except:
-                    pass
-                
-                env_info["package_manager"] = "conda"
-                break
-        
-        # Check for Poetry
-        if os.path.exists(os.path.join(project_dir, "pyproject.toml")):
-            try:
-                with open(os.path.join(project_dir, "pyproject.toml"), 'r') as f:
-                    content = f.read()
-                    if "[tool.poetry]" in content:
-                        env_info["type"] = "poetry"
-                        env_info["package_manager"] = "poetry"
-            except:
-                pass
-        
-        # Check for Pipenv
-        if os.path.exists(os.path.join(project_dir, "Pipfile")):
-            env_info["type"] = "pipenv"
-            env_info["package_manager"] = "pipenv"
-        
-        # If we couldn't detect an environment, assume system Python
-        if env_info["type"] is None:
-            env_info["type"] = "system"
-            env_info["python_path"] = sys.executable
-            env_info["package_manager"] = "pip"
-        
-        # Cache the result
-        self.env_cache[project_dir] = env_info
-        return env_info
-    
-    def get_python_executable(self, project_dir):
-        """Get the Python executable for the project's environment."""
-        env_info = self.detect_environment(project_dir)
-        
-        if env_info["python_path"]:
-            return env_info["python_path"]
-        
-        # Handle conda environments differently
-        if env_info["type"] == "conda" and "name" in env_info:
-            try:
-                # Try to get the python path using conda info
-                result = subprocess.run(
-                    ["conda", "info", "--envs", "--json"],
-                    capture_output=True, text=True
-                )
-                
-                if result.returncode == 0:
-                    data = json.loads(result.stdout)
-                    envs = data.get("envs", [])
-                    
-                    for env_path in envs:
-                        if os.path.basename(env_path) == env_info["name"]:
-                            if os.path.exists(os.path.join(env_path, "bin", "python")):
-                                return os.path.join(env_path, "bin", "python")
-                            elif os.path.exists(os.path.join(env_path, "python.exe")):
-                                return os.path.join(env_path, "python.exe")
-            except:
-                pass
-        
-        # Fall back to system Python
-        return sys.executable
-    
-    def install_dependencies(self, project_dir, requirements_file=None, quiet_mode=False, continue_on_error=True):
-        """Install dependencies for a project based on its environment type."""
-        env_info = self.detect_environment(project_dir)
-        success = False
-        problem_packages = []
-        
-        if not requirements_file:
-            requirements_file = os.path.join(project_dir, "requirements.txt")
-            if not os.path.exists(requirements_file):
-                logging.warning(f"No requirements.txt found in {project_dir}")
-                return False, []
-        
-        if not quiet_mode:
-            logging.info(f"Installing dependencies from {requirements_file} for {project_dir}")
-        
-        try:
-            if env_info["package_manager"] == "pip":
-                # Try to identify problematic packages first and install them separately
-                with open(requirements_file, 'r') as f:
-                    requirements = f.read().splitlines()
-                
-                # Filter out comments and empty lines
-                requirements = [r.strip() for r in requirements if r.strip() and not r.strip().startswith('#')]
-                
-                # Use the environment's Python to install
-                python_exec = self.get_python_executable(project_dir)
-                
-                if continue_on_error:
-                    # Try installing one by one to identify problematic packages
-                    for req in requirements:
-                        if ';' in req:  # Skip environment markers for now
-                            continue
-                            
-                        # Skip options (lines starting with -)
-                        if req.startswith('-'):
-                            continue
-                            
-                        cmd = [python_exec, "-m", "pip", "install", req]
-                        
-                        if quiet_mode:
-                            cmd.append("--quiet")
-                        
-                        result = subprocess.run(
-                            cmd, cwd=project_dir, capture_output=True, text=True
-                        )
-                        
-                        if result.returncode != 0:
-                            problem_packages.append(req)
-                            if not quiet_mode:
-                                logging.error(f"Failed to install {req}: {result.stderr.splitlines()[-1] if result.stderr else 'Unknown error'}")
-                    
-                    success = len(problem_packages) < len(requirements)
-                else:
-                    # Install all at once
-                    cmd = [python_exec, "-m", "pip", "install", "-r", requirements_file]
-                    
-                    if quiet_mode:
-                        cmd.append("--quiet")
-                    
-                    result = subprocess.run(
-                        cmd, cwd=project_dir, capture_output=True, text=True
-                    )
-                    
-                    if result.returncode == 0:
-                        if not quiet_mode:
-                            logging.info(f"Successfully installed dependencies for {project_dir}")
-                        success = True
-                    else:
-                        if not quiet_mode:
-                            logging.error(f"Failed to install dependencies: {result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'}")
-            
-            elif env_info["package_manager"] == "conda":
-                # Handle conda environments
-                if "name" in env_info:
-                    cmd = ["conda", "install", "--file", requirements_file, "-n", env_info["name"], "-y"]
-                    
-                    if quiet_mode:
-                        cmd.append("-q")
-                    
-                    result = subprocess.run(
-                        cmd, cwd=project_dir, capture_output=True, text=True
-                    )
-                    
-                    if result.returncode == 0:
-                        if not quiet_mode:
-                            logging.info(f"Successfully installed dependencies for conda env {env_info['name']}")
-                        success = True
-                    else:
-                        if not quiet_mode:
-                            logging.error(f"Failed to install conda dependencies: {result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'}")
-            
-            elif env_info["package_manager"] == "poetry":
-                # Handle poetry projects
-                cmd = ["poetry", "install"]
-                
-                if quiet_mode:
-                    cmd.append("-q")
-                
-                result = subprocess.run(
-                    cmd, cwd=project_dir, capture_output=True, text=True
-                )
-                
-                if result.returncode == 0:
-                    if not quiet_mode:
-                        logging.info(f"Successfully installed dependencies with poetry for {project_dir}")
-                    success = True
-                else:
-                    if not quiet_mode:
-                        logging.error(f"Failed to install poetry dependencies: {result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'}")
-            
-            elif env_info["package_manager"] == "pipenv":
-                # Handle pipenv projects
-                cmd = ["pipenv", "install"]
-                
-                if quiet_mode:
-                    cmd.append("--quiet")
-                
-                result = subprocess.run(
-                    cmd, cwd=project_dir, capture_output=True, text=True
-                )
-                
-                if result.returncode == 0:
-                    if not quiet_mode:
-                        logging.info(f"Successfully installed dependencies with pipenv for {project_dir}")
-                    success = True
-                else:
-                    if not quiet_mode:
-                        logging.error(f"Failed to install pipenv dependencies: {result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'}")
-        
-        except Exception as e:
-            if not quiet_mode:
-                logging.error(f"Error installing dependencies: {e}")
-        
-        return success, problem_packages
-
-class BuildManager:
-    """Handle project building and compilation."""
-    
-    def __init__(self, env_manager):
-        self.env_manager = env_manager
-    
-    def has_compiled_components(self, project_dir):
-        """Check if the project has components that need compilation."""
-        # Look for setup.py with extensions
-        setup_py = os.path.join(project_dir, "setup.py")
-        if os.path.exists(setup_py):
-            try:
-                with open(setup_py, 'r') as f:
-                    content = f.read()
-                    # Check for Extension or CythonExtension
-                    if "Extension(" in content or "CythonExtension" in content or "Cython" in content:
-                        return True
-            except:
-                pass
-        
-        # Look for .c, .cpp or .pyx files
-        for root, _, files in os.walk(project_dir):
-            for file in files:
-                if file.endswith(('.c', '.cpp', '.cxx', '.pyx', '.pxd')):
-                    return True
-        
-        return False
-    
-    def build_project(self, project_dir, quiet_mode=False, continue_on_error=True):
-        """Build the project if it has compiled components."""
-        if not self.has_compiled_components(project_dir):
-            if not quiet_mode:
-                logging.info(f"No compiled components detected in {project_dir}")
-            return True
-        
-        if not quiet_mode:
-            logging.info(f"Building project with compiled components: {project_dir}")
-        
-        env_info = self.env_manager.detect_environment(project_dir)
-        python_exec = self.env_manager.get_python_executable(project_dir)
-        success = False
-        
-        try:
-            # Try setup.py build
-            if os.path.exists(os.path.join(project_dir, "setup.py")):
-                cmd = [python_exec, "setup.py", "build_ext", "--inplace"]
-                
-                result = subprocess.run(
-                    cmd, cwd=project_dir, capture_output=True, text=True
-                )
-                
-                if result.returncode == 0:
-                    if not quiet_mode:
-                        logging.info(f"Successfully built extensions for {project_dir}")
-                    success = True
-                else:
-                    error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
-                    if not quiet_mode:
-                        logging.error(f"Failed to build extensions: {error_msg}")
-                    
-                    # If first attempt failed and we want to continue, try regular build
-                    if continue_on_error:
-                        cmd = [python_exec, "setup.py", "build"]
-                        
-                        result = subprocess.run(
-                            cmd, cwd=project_dir, capture_output=True, text=True
-                        )
-                        
-                        if result.returncode == 0:
-                            if not quiet_mode:
-                                logging.info(f"Successfully built project {project_dir}")
-                            success = True
-                        else:
-                            error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
-                            if not quiet_mode:
-                                logging.error(f"Failed to build project: {error_msg}")
-                    
-                    # Try other build methods if available
-                    if not success and continue_on_error and os.path.exists(os.path.join(project_dir, "setup.py")):
-                        # Try with alternate compilation flags
-                        cmd = [python_exec, "setup.py", "build_ext", "--inplace", "--no-python-abi-suffix"]
-                        
-                        result = subprocess.run(
-                            cmd, cwd=project_dir, capture_output=True, text=True
-                        )
-                        
-                        if result.returncode == 0:
-                            if not quiet_mode:
-                                logging.info(f"Successfully built extensions with --no-python-abi-suffix for {project_dir}")
-                            success = True
-            
-            # Try pip install -e . for development mode if all else failed
-            if not success and continue_on_error:
-                cmd = [python_exec, "-m", "pip", "install", "-e", "."]
-                
-                if quiet_mode:
-                    cmd.append("--quiet")
-                
-                result = subprocess.run(
-                    cmd, cwd=project_dir, capture_output=True, text=True
-                )
-                
-                if result.returncode == 0:
-                    if not quiet_mode:
-                        logging.info(f"Successfully installed project in development mode: {project_dir}")
-                    success = True
-                else:
-                    error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
-                    if not quiet_mode:
-                        logging.error(f"Failed to install in development mode: {error_msg}")
-            
-            # If we continue in error and still couldn't build, note this but consider it a "success"
-            # for the purpose of continuing the script
-            if not success and continue_on_error:
-                if not quiet_mode:
-                    logging.warning(f"Could not build {project_dir}, but continuing due to continue_on_error=True")
-                # Return "success" so the script continues
-                return True
-        
-        except Exception as e:
-            if not quiet_mode:
-                logging.error(f"Error building project: {e}")
-            if continue_on_error:
-                return True
-        
-        return success
-
-class TestManager:
-    """Handle project testing."""
-    
-    def __init__(self, env_manager):
-        self.env_manager = env_manager
-    
-    def has_tests(self, project_dir):
-        """Check if the project has tests."""
-        test_indicators = [
-            os.path.join(project_dir, "tests"),
-            os.path.join(project_dir, "test"),
-            os.path.join(project_dir, "pytest.ini"),
-            os.path.join(project_dir, "conftest.py"),
-            os.path.join(project_dir, "tox.ini")
-        ]
-        
-        for indicator in test_indicators:
-            if os.path.exists(indicator):
-                return True
-        
-        # Check if setup.py has test or pytest in it
-        setup_py = os.path.join(project_dir, "setup.py")
-        if os.path.exists(setup_py):
-            try:
-                with open(setup_py, 'r') as f:
-                    content = f.read()
-                    if "pytest" in content or "unittest" in content or "test_suite" in content:
-                        return True
-            except:
-                pass
-        
-        return False
-    
-    def run_tests(self, project_dir, quiet_mode=False, continue_on_error=True):
-        """Run the project's tests."""
-        if not self.has_tests(project_dir):
-            if not quiet_mode:
-                logging.info(f"No tests detected in {project_dir}")
-            return True
-        
-        if not quiet_mode:
-            logging.info(f"Running tests for project: {project_dir}")
-        
-        env_info = self.env_manager.detect_environment(project_dir)
-        python_exec = self.env_manager.get_python_executable(project_dir)
-        success = False
-        
-        try:
-            # Try pytest first
-            cmd = [python_exec, "-m", "pytest"]
-            
-            if quiet_mode:
-                cmd.append("-q")
-            
-            result = subprocess.run(
-                cmd, cwd=project_dir, capture_output=True, text=True, timeout=300  # 5-minute timeout
-            )
-            
-            if result.returncode == 0:
-                if not quiet_mode:
-                    logging.info(f"Tests passed for {project_dir}")
-                success = True
-            else:
-                error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
-                if not quiet_mode:
-                    logging.warning(f"Tests failed for {project_dir}: {error_msg}")
-                
-                # Try unittest as fallback
-                if continue_on_error:
-                    cmd = [python_exec, "-m", "unittest", "discover"]
-                    
-                    if quiet_mode:
-                        cmd.append("-q")
-                    
-                    result = subprocess.run(
-                        cmd, cwd=project_dir, capture_output=True, text=True, timeout=300
-                    )
-                    
-                    if result.returncode == 0:
-                        if not quiet_mode:
-                            logging.info(f"Unittest tests passed for {project_dir}")
-                        success = True
-                    else:
-                        error_msg = result.stderr.splitlines()[-5:] if result.stderr else 'Unknown error'
-                        if not quiet_mode:
-                            logging.warning(f"Unittest tests failed for {project_dir}: {error_msg}")
-                
-                # If we continue in error and couldn't run tests, note this but consider it a "success"
-                if not success and continue_on_error:
-                    if not quiet_mode:
-                        logging.warning(f"Could not run tests for {project_dir}, but continuing due to continue_on_error=True")
-                    # Return "success" so the script continues
-                    return True
-        
-        except subprocess.TimeoutExpired:
-            if not quiet_mode:
-                logging.error(f"Tests timed out for {project_dir}")
-            if continue_on_error:
-                return True
-        except Exception as e:
-            if not quiet_mode:
-                logging.error(f"Error running tests: {e}")
-            if continue_on_error:
-                return True
-        
-        return success
+    PACKAGE_KNOWLEDGE_BASE = {"replacements": {}, "deprecations": {}, "vulnerabilities": {}}
 
 class PackageInfo:
     """Class to hold package information and provide comparison functionality."""
-    
     def __init__(self, name, version_str=None, pypi_info=None):
         self.name = name.lower()
         self.version_str = version_str
@@ -1347,10 +116,6 @@ class PackageInfo:
         self.is_deprecated = False
         self.replacement = None
         self.vulnerabilities = []
-        self.api_signature = None
-        self.usage_signature = None
-        self.popularity_score = None
-        self.potential_replacements = []
         
     def _parse_version(self, version_str):
         """Parse version string to version object for comparison."""
@@ -1374,226 +139,39 @@ class PackageInfo:
                 self.latest_version_str = self.pypi_info.get('info', {}).get('version')
                 self.latest_version = self._parse_version(self.latest_version_str)
                 
-                # Get download stats for popularity
-                try:
-                    stats_url = f"https://pypistats.org/api/packages/{self.name}/recent"
-                    stats_response = requests.get(stats_url, timeout=5)
-                    if stats_response.status_code == 200:
-                        stats_data = stats_response.json()
-                        self.popularity_score = stats_data.get('data', {}).get('last_month', 0)
-                except:
-                    pass
-                
                 # Check for deprecation hints
                 info = self.pypi_info.get('info', {})
                 description = info.get('description', '') or ''
                 summary = info.get('summary', '') or ''
                 
-                # Get classifier info
-                classifiers = info.get('classifiers', [])
-                development_status = [c for c in classifiers if c.startswith('Development Status')]
-                
-                # Check development status for deprecation hints
-                if any('Inactive' in status for status in development_status):
-                    self.is_deprecated = True
-                
-                deprecated_keywords = [
-                    'deprecated', 'no longer maintained', 'use instead', 
-                    'replaced by', 'abandoned', 'unmaintained', 'obsolete'
-                ]
+                deprecated_keywords = ['deprecated', 'no longer maintained', 'use instead', 'replaced by']
                 
                 for keyword in deprecated_keywords:
                     if keyword in description.lower() or keyword in summary.lower():
                         self.is_deprecated = True
                         # Try to find replacement suggestion
-                        text = description.lower() + ' ' + summary.lower()
+                        text = description + ' ' + summary
                         replace_patterns = [
                             r'use\s+([a-zA-Z0-9_-]+)\s+instead',
                             r'replaced\s+by\s+([a-zA-Z0-9_-]+)',
                             r'use\s+the\s+([a-zA-Z0-9_-]+)\s+package',
-                            r'recommend\s+using\s+([a-zA-Z0-9_-]+)',
-                            r'migrate\s+to\s+([a-zA-Z0-9_-]+)',
-                            r'successor\s+is\s+([a-zA-Z0-9_-]+)'
+                            r'recommend\s+using\s+([a-zA-Z0-9_-]+)'
                         ]
                         
                         for pattern in replace_patterns:
-                            match = re.search(pattern, text)
+                            match = re.search(pattern, text.lower())
                             if match:
                                 self.replacement = match.group(1)
                                 # Add to knowledge base
-                                if self.name not in KNOWLEDGE_BASE["replacements"] and self.replacement:
-                                    KNOWLEDGE_BASE["replacements"][self.name] = self.replacement
+                                if self.replacement not in PACKAGE_KNOWLEDGE_BASE["replacements"]:
+                                    PACKAGE_KNOWLEDGE_BASE["replacements"][self.name] = self.replacement
                                     _save_knowledge_base()
                                 break
                 
-                # Check last release date
-                upload_time = None
-                for release in self.pypi_info.get('releases', {}).values():
-                    if release and isinstance(release, list) and release[0].get('upload_time'):
-                        upload_time = release[0].get('upload_time')
-                        break
-                
-                if upload_time:
-                    try:
-                        # Check if last release was more than 2 years ago
-                        last_release = datetime.fromisoformat(upload_time.replace('Z', '+00:00'))
-                        years_since_update = (datetime.now() - last_release).days / 365
-                        
-                        if years_since_update > 2:
-                            # Mark as potentially deprecated if no updates for 2+ years
-                            logging.info(f"Package {self.name} hasn't been updated in {years_since_update:.1f} years")
-                            
-                            # If already not marked deprecated by other checks
-                            if not self.is_deprecated:
-                                self.is_deprecated = True
-                    except:
-                        pass
-                
                 return True
             return False
-        except Exception as e:
-            logging.debug(f"Error fetching PyPI info for {self.name}: {e}")
+        except (requests.RequestException, json.JSONDecodeError):
             return False
-    
-    def find_potential_replacements(self):
-        """Find potential replacements for this package."""
-        if not self.pypi_info:
-            return []
-        
-        replacements = []
-        
-        # First check if we already know a replacement
-        if self.name in KNOWLEDGE_BASE["replacements"]:
-            self.replacement = KNOWLEDGE_BASE["replacements"][self.name]
-            replacements.append({
-                "name": self.replacement,
-                "confidence": 0.9,
-                "reason": "Known replacement from knowledge base"
-            })
-            return replacements
-        
-        # Check if package has a dedicated replacement
-        if self.replacement:
-            replacements.append({
-                "name": self.replacement,
-                "confidence": 0.9,
-                "reason": "Explicitly mentioned as replacement in package description"
-            })
-            return replacements
-        
-        # If package is deprecated, try to find alternatives
-        if self.is_deprecated:
-            # 1. Check related packages by keywords
-            keywords = self.pypi_info.get('info', {}).get('keywords', '')
-            if keywords:
-                if isinstance(keywords, str):
-                    keywords = [k.strip() for k in keywords.split(',')]
-                
-                # Search for packages with similar keywords
-                for keyword in keywords:
-                    if not keyword.strip():
-                        continue
-                    
-                    try:
-                        search_url = f"https://pypi.org/search/?q={keyword}&o=download_count"
-                        response = requests.get(search_url, timeout=5)
-                        
-                        if response.status_code == 200:
-                            # Parse HTML to extract package names
-                            matches = re.findall(r'<a class="package-snippet__name" href="/project/([^/]+)/">', response.text)
-                            
-                            for i, match in enumerate(matches[:5]):  # Take top 5 results
-                                if match.lower() != self.name.lower():
-                                    if match.lower() not in [r["name"].lower() for r in replacements]:
-                                        # Check if it's actually newer
-                                        try:
-                                            pkg_response = requests.get(f"https://pypi.org/pypi/{match}/json", timeout=3)
-                                            if pkg_response.status_code == 200:
-                                                pkg_data = pkg_response.json()
-                                                last_release = pkg_data.get('info', {}).get('version')
-                                                
-                                                if last_release:
-                                                    replacements.append({
-                                                        "name": match,
-                                                        "confidence": 0.5 - (i * 0.05),
-                                                        "reason": f"Popular alternative found via keyword '{keyword}'"
-                                                    })
-                                        except:
-                                            pass
-                    except:
-                        pass
-            
-            # 2. Check for similar package names
-            try:
-                # Remove common prefixes/suffixes to find the core name
-                core_name = re.sub(r'^(py|python)-', '', self.name)
-                core_name = re.sub(r'-(py|python)$', '', core_name)
-                
-                search_url = f"https://pypi.org/search/?q={core_name}&o=download_count"
-                response = requests.get(search_url, timeout=5)
-                
-                if response.status_code == 200:
-                    matches = re.findall(r'<a class="package-snippet__name" href="/project/([^/]+)/">', response.text)
-                    
-                    for i, match in enumerate(matches[:8]):  # Take top 8 results
-                        if match.lower() != self.name.lower():
-                            if match.lower() not in [r["name"].lower() for r in replacements]:
-                                if self._name_similarity(self.name, match) > 0.5:
-                                    replacements.append({
-                                        "name": match,
-                                        "confidence": 0.4 - (i * 0.04),
-                                        "reason": f"Similar package name to {self.name}"
-                                    })
-            except:
-                pass
-            
-            # 3. Check for popular packages in the same category
-            try:
-                categories = []
-                for classifier in self.pypi_info.get('info', {}).get('classifiers', []):
-                    if classifier.startswith('Topic ::'):
-                        category = '::'.join(classifier.split('::')[1:]).strip()
-                        categories.append(category)
-                
-                for category in categories[:2]:  # Limit to first 2 categories to avoid too many requests
-                    search_url = f"https://pypi.org/search/?c={category}&o=download_count"
-                    response = requests.get(search_url, timeout=5)
-                    
-                    if response.status_code == 200:
-                        matches = re.findall(r'<a class="package-snippet__name" href="/project/([^/]+)/">', response.text)
-                        
-                        for i, match in enumerate(matches[:3]):  # Take top 3 results per category
-                            if match.lower() != self.name.lower():
-                                if match.lower() not in [r["name"].lower() for r in replacements]:
-                                    replacements.append({
-                                        "name": match,
-                                        "confidence": 0.3 - (i * 0.05),
-                                        "reason": f"Popular package in category '{category}'"
-                                    })
-            except:
-                pass
-        
-        self.potential_replacements = replacements
-        return replacements
-    
-    def _name_similarity(self, name1, name2):
-        """Calculate similarity between two package names."""
-        name1 = name1.lower()
-        name2 = name2.lower()
-        
-        # Direct substring
-        if name1 in name2 or name2 in name1:
-            return 0.8
-        
-        # Levenshtein distance (simplified)
-        l1, l2 = len(name1), len(name2)
-        distance = 0
-        for i in range(min(l1, l2)):
-            if name1[i] != name2[i]:
-                distance += 1
-        distance += abs(l1 - l2)
-        
-        return 1.0 - (distance / max(l1, l2))
     
     def check_for_vulnerabilities(self):
         """Check package for known vulnerabilities."""
@@ -1611,71 +189,25 @@ class PackageInfo:
                     )
                     
                     if result.returncode != 0:
-                        try:
-                            data = json.loads(result.stdout)
-                            if isinstance(data, list):
-                                self.vulnerabilities = data
-                                
-                                # Add to knowledge base
-                                if self.vulnerabilities and self.name not in KNOWLEDGE_BASE["vulnerabilities"]:
-                                    KNOWLEDGE_BASE["vulnerabilities"][self.name] = {
-                                        "version": self.version_str,
-                                        "count": len(self.vulnerabilities),
-                                        "ids": [vuln[4] for vuln in self.vulnerabilities if len(vuln) > 4]
-                                    }
-                                    _save_knowledge_base()
-                                
-                                return True
-                        except:
-                            logging.debug(f"Error parsing safety results for {self.name}")
+                        data = json.loads(result.stdout)
+                        if isinstance(data, list):
+                            self.vulnerabilities = data
+                            
+                            # Add to knowledge base
+                            if self.vulnerabilities and self.name not in PACKAGE_KNOWLEDGE_BASE["vulnerabilities"]:
+                                PACKAGE_KNOWLEDGE_BASE["vulnerabilities"][self.name] = {
+                                    "version": self.version_str,
+                                    "count": len(self.vulnerabilities)
+                                }
+                                _save_knowledge_base()
+                            
+                            return True
                 finally:
                     # Clean up temp file
                     if os.path.exists(tmp_name):
                         os.unlink(tmp_name)
             except Exception as e:
                 logging.debug(f"Error checking vulnerabilities for {self.name}: {e}")
-        
-        # Check NVD database via OSV API
-        if requests:
-            try:
-                osv_url = "https://api.osv.dev/v1/query"
-                osv_data = {
-                    "package": {
-                        "name": self.name,
-                        "ecosystem": "PyPI"
-                    }
-                }
-                
-                if self.version_str:
-                    osv_data["version"] = self.version_str
-                
-                osv_response = requests.post(osv_url, json=osv_data, timeout=5)
-                if osv_response.status_code == 200:
-                    vulns = osv_response.json().get("vulns", [])
-                    
-                    if vulns:
-                        for vuln in vulns:
-                            self.vulnerabilities.append([
-                                self.name,
-                                self.version_str,
-                                vuln.get("summary", "Unknown vulnerability"),
-                                vuln.get("references", [{}])[0].get("url", ""),
-                                vuln.get("id", "")
-                            ])
-                        
-                        # Add to knowledge base
-                        if self.vulnerabilities and self.name not in KNOWLEDGE_BASE["vulnerabilities"]:
-                            KNOWLEDGE_BASE["vulnerabilities"][self.name] = {
-                                "version": self.version_str,
-                                "count": len(self.vulnerabilities),
-                                "ids": [vuln[4] for vuln in self.vulnerabilities if len(vuln) > 4]
-                            }
-                            _save_knowledge_base()
-                        
-                        return True
-            except Exception as e:
-                logging.debug(f"Error checking OSV for {self.name}: {e}")
-        
         return False
     
     def needs_update(self):
@@ -1690,54 +222,130 @@ class PackageInfo:
     
     def should_be_replaced(self):
         """Check if package should be replaced."""
-        # First, check for known replacements
-        if self.name in KNOWLEDGE_BASE["replacements"]:
-            self.replacement = KNOWLEDGE_BASE["replacements"][self.name]
+        # Check knowledge base first
+        if self.name in PACKAGE_KNOWLEDGE_BASE["replacements"]:
+            self.replacement = PACKAGE_KNOWLEDGE_BASE["replacements"][self.name]
             return True
         
-        # Second, check if it's deprecated with a replacement
+        # Check fallback replacements
+        if self.name in FALLBACK_PACKAGE_REPLACEMENTS:
+            self.replacement = FALLBACK_PACKAGE_REPLACEMENTS[self.name]
+            return True
+        
+        # Check if we identified it as deprecated
         if self.is_deprecated and self.replacement:
             return True
-        
-        # Third, check for security vulnerabilities
-        if self.vulnerabilities:
-            return len(self.vulnerabilities) > 0
-        
-        # Finally, check if we have high confidence potential replacements
-        if self.potential_replacements:
-            high_confidence = [r for r in self.potential_replacements if r["confidence"] >= 0.7]
-            if high_confidence:
-                self.replacement = high_confidence[0]["name"]
-                return True
         
         return False
     
     def get_update_spec(self):
         """Get updated package specification."""
         if self.should_be_replaced():
-            # For replacements, check if we have specific version constraints
-            replacement = self.replacement
-            
-            # Check if there's API compatibility info
-            if (self.name in KNOWLEDGE_BASE["compatibility"] and 
-                replacement in KNOWLEDGE_BASE["compatibility"][self.name]):
-                compat_data = KNOWLEDGE_BASE["compatibility"][self.name][replacement]
-                
-                # If we have compatibility data, include version constraints
-                if compat_data.get("min_version"):
-                    return f"{replacement}>={compat_data['min_version']}"
-            
-            return f"{replacement}"
+            # For replacements, we'll preserve any version constraints from the replacement info
+            if '>=' in self.replacement or '==' in self.replacement:
+                return self.replacement
+            return f"{self.replacement}"
         elif self.needs_update():
             return f"{self.name}>={self.latest_version_str}"
         return None
 
 def _save_knowledge_base():
     """Save the knowledge base to disk."""
-    KNOWLEDGE_BASE["last_update"] = datetime.now().isoformat()
-    os.makedirs(os.path.dirname(KNOWLEDGE_BASE_FILE), exist_ok=True)
-    with open(KNOWLEDGE_BASE_FILE, 'w') as f:
-        json.dump(KNOWLEDGE_BASE, f, indent=2)
+    os.makedirs(os.path.dirname(PACKAGE_KNOWLEDGE_BASE_FILE), exist_ok=True)
+    with open(PACKAGE_KNOWLEDGE_BASE_FILE, 'w') as f:
+        json.dump(PACKAGE_KNOWLEDGE_BASE, f, indent=2)
+
+# ----- STEP 1: CONDA UPDATE FUNCTIONS -----
+
+def update_conda_environments():
+    """Update all conda environments."""
+    logging.info("Starting conda environment updates")
+    
+    # Check if conda is available
+    try:
+        conda_info = subprocess.run(
+            ["conda", "info", "--json"],
+            capture_output=True, text=True, check=True
+        )
+        conda_data = json.loads(conda_info.stdout)
+        
+        # Update conda itself first
+        logging.info("Updating conda base installation")
+        subprocess.run(
+            ["conda", "update", "-n", "base", "conda", "-y"],
+            capture_output=True, text=True
+        )
+        
+        # Get list of environments
+        env_list = subprocess.run(
+            ["conda", "env", "list", "--json"],
+            capture_output=True, text=True, check=True
+        )
+        env_data = json.loads(env_list.stdout)
+        
+        # Update each environment
+        for env in env_data.get("envs", []):
+            env_name = os.path.basename(env)
+            if env_name == "base":
+                continue  # We already updated base
+                
+            logging.info(f"Updating conda environment: {env_name}")
+            try:
+                # Update all packages in the environment
+                update_result = subprocess.run(
+                    ["conda", "update", "--all", "-n", env_name, "-y"],
+                    capture_output=True, text=True, timeout=600  # 10 minute timeout
+                )
+                
+                if update_result.returncode == 0:
+                    logging.info(f"Successfully updated conda environment: {env_name}")
+                else:
+                    logging.warning(f"Failed to update conda environment {env_name}: {update_result.stderr}")
+                    
+                # Signal that this environment was updated
+                create_signal(f"conda_env_updated_{env_name}")
+                
+            except subprocess.TimeoutExpired:
+                logging.error(f"Timeout updating conda environment: {env_name}")
+            except Exception as e:
+                logging.error(f"Error updating conda environment {env_name}: {str(e)}")
+        
+        return True
+    except (subprocess.SubprocessError, json.JSONDecodeError) as e:
+        logging.error(f"Error checking conda: {str(e)}")
+        return False
+    except FileNotFoundError:
+        logging.info("Conda not found on this system")
+        return False
+
+# ----- STEP 2: BACKUP REQUIREMENTS FILES -----
+
+def backup_requirements_file(file_path):
+    """Create a backup of a requirements file."""
+    if not os.path.exists(file_path):
+        return False
+        
+    try:
+        # Generate a unique filename based on the path and date
+        filename = os.path.basename(file_path)
+        parent_dir = os.path.basename(os.path.dirname(file_path))
+        date_str = datetime.now().strftime('%Y%m%d-%H%M%S')
+        
+        # Create a hash of the path to ensure uniqueness
+        path_hash = hashlib.md5(file_path.encode()).hexdigest()[:8]
+        
+        backup_filename = f"{parent_dir}_{filename}_{date_str}_{path_hash}.bak"
+        backup_path = os.path.join(BACKUP_DIR, backup_filename)
+        
+        # Copy the file
+        shutil.copy2(file_path, backup_path)
+        logging.info(f"Created backup of {file_path} at {backup_path}")
+        return True
+    except Exception as e:
+        logging.error(f"Error backing up {file_path}: {str(e)}")
+        return False
+
+# ----- HELPERS FOR PROJECT FINDING AND PROCESSING -----
 
 def find_python_projects(start_dir=None):
     """Find all Python projects starting from start_dir."""
@@ -1753,8 +361,10 @@ def find_python_projects(start_dir=None):
         "setup.py",
         "Pipfile",
         "poetry.lock",
-        "conda.yaml",
-        "environment.yml"
+        "environment.yml",  # Conda environment file
+        "conda-env.yml",    # Another common conda env filename
+        ".python-version",  # pyenv
+        "tox.ini"           # tox
     ]
     
     # Directories to exclude
@@ -1776,7 +386,9 @@ def find_python_projects(start_dir=None):
             "scan_directories": [os.path.expanduser("~")],
             "exclude_directories": [
                 "~/anaconda3", "~/miniconda3", "~/venv", "~/.venv"
-            ]
+            ],
+            "build_after_update": True,
+            "update_conda": True
         }
         os.makedirs(os.path.dirname(config_file), exist_ok=True)
         with open(config_file, 'w') as f:
@@ -1804,12 +416,6 @@ def find_python_projects(start_dir=None):
                 python_projects.append(root)
                 logging.info(f"Found Python project: {root}")
                 break
-        
-        # Also look for .py files directly
-        if any(f.endswith('.py') for f in files):
-            if root not in python_projects:
-                python_projects.append(root)
-                logging.info(f"Found Python code: {root}")
     
     return python_projects
 
@@ -1822,7 +428,7 @@ def parse_requirements(requirements_file):
     if not os.path.exists(requirements_file):
         return packages
     
-    with open(requirements_file, 'r', encoding='utf-8', errors='ignore') as f:
+    with open(requirements_file, 'r') as f:
         lines = f.readlines()
     
     for line in lines:
@@ -1880,182 +486,39 @@ def parse_package_spec(spec):
     # No version constraint
     return spec.strip(), None, spec
 
-def analyze_package_usages(project_dir, package_names):
+def check_and_update_package(pkg_info):
     """
-    Analyze how packages are used in a project.
-    Returns a dict of package usage signatures.
+    Check a package against PyPI and update its information.
     """
-    try:
-        code_analyzer = CodeUsageAnalyzer()
-        all_imports, all_usage = code_analyzer.analyze_project(project_dir)
-        
-        # Filter to only requested packages
-        package_usages = {}
-        
-        for package_name in package_names:
-            # Normalize name for import comparison
-            package_name_lower = package_name.lower()
-            
-            # Direct match
-            if package_name_lower in all_usage:
-                package_usages[package_name] = all_usage[package_name_lower]
-                continue
-            
-            # Try variations of the package name
-            variations = [
-                package_name_lower.replace('-', '_'),
-                package_name_lower.replace('_', '-'),
-                package_name_lower.replace('-', ''),
-                package_name_lower.replace('_', '')
-            ]
-            
-            for var in variations:
-                if var in all_usage:
-                    package_usages[package_name] = all_usage[var]
-                    break
-        
-        # Generate signatures
-        signatures = {}
-        for pkg, usage in package_usages.items():
-            signatures[pkg] = code_analyzer.get_core_usage_signature({"modules": {pkg: usage}})
-        
-        return signatures
-    except Exception as e:
-        logging.debug(f"Error analyzing package usages in {project_dir}: {e}")
-        return {}
-
-def process_package_with_advanced_analysis(pkg_info, project_dir=None):
-    """Process a package with advanced analysis."""
-    # Get package info from PyPI
+    # Skip if not a valid package name (like direct URLs)
+    if not pkg_info or any(c in pkg_info.name for c in ":/\\"):
+        return pkg_info
+    
+    # Check knowledge base first for cached info
+    if pkg_info.name in PACKAGE_KNOWLEDGE_BASE.get("deprecations", {}):
+        pkg_info.is_deprecated = True
+        pkg_info.replacement = PACKAGE_KNOWLEDGE_BASE["replacements"].get(pkg_info.name)
+    
+    # Fetch from PyPI if we have network
     pkg_info.fetch_pypi_info()
     
     # Check for vulnerabilities if we have a version
     if pkg_info.version_str:
         pkg_info.check_for_vulnerabilities()
     
-    # Find potential replacements
-    pkg_info.find_potential_replacements()
-    
-    # If we have a project directory, analyze usage patterns
-    if project_dir and os.path.exists(project_dir):
-        usage_signatures = analyze_package_usages(project_dir, [pkg_info.name])
-        if pkg_info.name in usage_signatures:
-            pkg_info.usage_signature = usage_signatures[pkg_info.name]
-            
-            # Store usage signature in knowledge base for future reference
-            if "usage_signatures" not in KNOWLEDGE_BASE:
-                KNOWLEDGE_BASE["usage_signatures"] = {}
-            
-            KNOWLEDGE_BASE["usage_signatures"][pkg_info.name] = pkg_info.usage_signature
-            _save_knowledge_base()
-    
-    # Check compatibility with potential replacements
-    if pkg_info.potential_replacements:
-        # Initialize dependency resolver
-        resolver = DependencyResolver()
-        mod_analyzer = ModuleAPIAnalyzer()
-        code_analyzer = CodeUsageAnalyzer()
-        
-        # Get our API and usage signatures
-        if pkg_info.name not in KNOWLEDGE_BASE.get("api_signatures", {}):
-            pkg_info.api_signature = mod_analyzer.extract_module_api(pkg_info.name)
-            
-            if pkg_info.api_signature:
-                if "api_signatures" not in KNOWLEDGE_BASE:
-                    KNOWLEDGE_BASE["api_signatures"] = {}
-                
-                KNOWLEDGE_BASE["api_signatures"][pkg_info.name] = pkg_info.api_signature
-                _save_knowledge_base()
-        else:
-            pkg_info.api_signature = KNOWLEDGE_BASE["api_signatures"][pkg_info.name]
-        
-        for replacement in pkg_info.potential_replacements:
-            rep_name = replacement["name"]
-            
-            # Skip if we've already analyzed this combination
-            if (pkg_info.name in KNOWLEDGE_BASE.get("compatibility", {}) and 
-                rep_name in KNOWLEDGE_BASE["compatibility"][pkg_info.name]):
-                continue
-            
-            # Get replacement package info
-            try:
-                if requests:
-                    response = requests.get(f"https://pypi.org/pypi/{rep_name}/json", timeout=5)
-                    if response.status_code == 200:
-                        rep_data = response.json()
-                        rep_version = rep_data.get('info', {}).get('version')
-                        
-                        if rep_version:
-                            # Check dependency compatibility
-                            compat_score, issues = resolver.check_compatibility(
-                                pkg_info.name, pkg_info.version_str, 
-                                rep_name, rep_version
-                            )
-                            
-                            # Extract replacement API
-                            rep_api = mod_analyzer.extract_module_api(rep_name)
-                            
-                            # Compare APIs
-                            api_score, api_issues = mod_analyzer.compare_apis(
-                                pkg_info.api_signature, rep_api
-                            )
-                            
-                            # Compare usage signatures if available
-                            usage_score = 1.0
-                            usage_issues = []
-                            
-                            if pkg_info.usage_signature and rep_name in KNOWLEDGE_BASE.get("usage_signatures", {}):
-                                rep_usage = KNOWLEDGE_BASE["usage_signatures"][rep_name]
-                                usage_score, usage_issues = code_analyzer.compare_usage_signatures(
-                                    pkg_info.usage_signature, rep_usage
-                                )
-                            
-                            # Calculate overall compatibility score
-                            overall_score = (compat_score * 0.4) + (api_score * 0.4) + (usage_score * 0.2)
-                            
-                            # Store in knowledge base
-                            if "compatibility" not in KNOWLEDGE_BASE:
-                                KNOWLEDGE_BASE["compatibility"] = {}
-                            
-                            if pkg_info.name not in KNOWLEDGE_BASE["compatibility"]:
-                                KNOWLEDGE_BASE["compatibility"][pkg_info.name] = {}
-                            
-                            KNOWLEDGE_BASE["compatibility"][pkg_info.name][rep_name] = {
-                                "overall_score": overall_score,
-                                "dependency_score": compat_score,
-                                "api_score": api_score,
-                                "usage_score": usage_score,
-                                "min_version": rep_version,
-                                "issues": issues + api_issues + usage_issues,
-                                "analyzed_at": datetime.now().isoformat()
-                            }
-                            
-                            _save_knowledge_base()
-                            
-                            # Update confidence based on compatibility
-                            replacement["confidence"] = min(replacement["confidence"] + overall_score * 0.2, 0.95)
-                            
-                            # If high compatibility, suggest as replacement
-                            if overall_score >= 0.8 and replacement["confidence"] >= 0.7:
-                                pkg_info.replacement = rep_name
-                                
-                                # Add to replacements knowledge base
-                                KNOWLEDGE_BASE["replacements"][pkg_info.name] = rep_name
-                                _save_knowledge_base()
-            except Exception as e:
-                logging.debug(f"Error analyzing compatibility with {rep_name}: {e}")
-    
     return pkg_info
 
-def update_requirements_file(requirements_file, project_dir=None):
+# ----- STEP 3: UPDATE REQUIREMENTS FILES -----
+
+def update_requirements_file(requirements_file):
     """Update a requirements.txt file with modern equivalents."""
     if not os.path.exists(requirements_file):
         return False
     
-    if project_dir is None:
-        project_dir = os.path.dirname(requirements_file)
-    
     logging.info(f"Updating {requirements_file}")
+    
+    # First, create a backup
+    backup_requirements_file(requirements_file)
     
     # Parse requirements file
     packages = parse_requirements(requirements_file)
@@ -2072,15 +535,9 @@ def update_requirements_file(requirements_file, project_dir=None):
                 version_str = version_constraint[2:] if version_constraint and '==' in version_constraint else None
                 pkg_infos.append(PackageInfo(name, version_str))
     
-    # Process packages with advanced analysis in parallel
+    # Check packages in parallel
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = []
-        for pkg_info in pkg_infos:
-            futures.append(executor.submit(process_package_with_advanced_analysis, pkg_info, project_dir))
-        
-        updated_pkg_infos = []
-        for future in futures:
-            updated_pkg_infos.append(future.result())
+        updated_pkg_infos = list(executor.map(check_and_update_package, pkg_infos))
     
     # Map back to package positions
     pkg_info_index = 0
@@ -2105,24 +562,7 @@ def update_requirements_file(requirements_file, project_dir=None):
                     updated = True
                     
                     if pkg_info.should_be_replaced():
-                        # Record the replacement in history
-                        if "update_history" not in KNOWLEDGE_BASE:
-                            KNOWLEDGE_BASE["update_history"] = {}
-                        
-                        if pkg_info.name not in KNOWLEDGE_BASE["update_history"]:
-                            KNOWLEDGE_BASE["update_history"][pkg_info.name] = []
-                        
-                        KNOWLEDGE_BASE["update_history"][pkg_info.name].append({
-                            "from_version": pkg_info.version_str,
-                            "to_package": pkg_info.replacement,
-                            "date": datetime.now().isoformat(),
-                            "requirements_file": requirements_file,
-                            "project_dir": project_dir
-                        })
-                        _save_knowledge_base()
-                        
-                        reason = "deprecated" if pkg_info.is_deprecated else "vulnerable" if pkg_info.vulnerabilities else "modern alternative"
-                        logging.info(f"  Replaced {pkg_info.name} with {update_spec} ({reason})")
+                        logging.info(f"  Replaced {pkg_info.name} with {update_spec}")
                     else:
                         logging.info(f"  Updated {pkg_info.name} to {update_spec}")
                 else:
@@ -2144,12 +584,6 @@ def update_requirements_file(requirements_file, project_dir=None):
             new_lines.append(pkg["content"])
     
     if updated:
-        # Make a backup
-        backup_file = f"{requirements_file}.bak-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-        with open(backup_file, 'w') as f:
-            with open(requirements_file, 'r') as original:
-                f.write(original.read())
-        
         # Write updated file
         with open(requirements_file, 'w') as f:
             f.write('\n'.join(new_lines))
@@ -2160,216 +594,285 @@ def update_requirements_file(requirements_file, project_dir=None):
         logging.info(f"  No updates needed for {requirements_file}")
         return False
 
-def dynamic_fetch_package_repositories():
-    """Dynamically fetch package repositories and their metadata."""
-    global PACKAGE_REPOSITORIES
-    
-    try:
-        if requests:
-            # Try to get list of PyPI mirrors
-            response = requests.get("https://pypi.org/mirrors", timeout=5)
-            if response.status_code == 200:
-                mirrors = re.findall(r'<td><a href="([^"]+)"', response.text)
-                
-                for mirror in mirrors:
-                    if mirror not in [repo["url"] for repo in PACKAGE_REPOSITORIES]:
-                        PACKAGE_REPOSITORIES.append({
-                            "name": f"Mirror {mirror}",
-                            "url": f"{mirror.rstrip('/')}/pypi/{{package}}/json"
-                        })
-        
-        # Also try conda-forge API
-        if requests:
-            response = requests.get("https://conda.anaconda.org/conda-forge/", timeout=5)
-            if response.status_code == 200:
-                PACKAGE_REPOSITORIES.append({
-                    "name": "conda-forge",
-                    "url": "https://conda.anaconda.org/conda-forge/{package}/json"
-                })
-    except:
-        pass
-    
-    return PACKAGE_REPOSITORIES
+# ----- STEP 4: BUILD PROJECTS -----
 
-def learn_from_community_data():
-    """
-    Learn from community data about package replacements and deprecations.
-    Fetches data from multiple sources to improve knowledge base.
-    """
-    sources = [
-        "https://raw.githubusercontent.com/pypa/warehouse/main/warehouse/templates/legacy/api/json.py",
-        "https://raw.githubusercontent.com/pypa/pip/main/src/pip/_internal/resolution/resolvelib/candidates.py"
-    ]
+def detect_project_type(project_dir):
+    """Detect what type of Python project this is."""
+    project_type = {
+        "has_requirements": False,
+        "has_setup_py": False,
+        "has_pyproject": False,
+        "has_pipfile": False,
+        "has_conda_env": False,
+        "venv_path": None,
+        "conda_env_name": None
+    }
     
+    # Check for requirements.txt
+    if os.path.exists(os.path.join(project_dir, "requirements.txt")):
+        project_type["has_requirements"] = True
+    
+    # Check for setup.py
+    if os.path.exists(os.path.join(project_dir, "setup.py")):
+        project_type["has_setup_py"] = True
+    
+    # Check for pyproject.toml
+    if os.path.exists(os.path.join(project_dir, "pyproject.toml")):
+        project_type["has_pyproject"] = True
+    
+    # Check for Pipfile
+    if os.path.exists(os.path.join(project_dir, "Pipfile")):
+        project_type["has_pipfile"] = True
+    
+    # Check for conda environment files
+    conda_files = ["environment.yml", "conda-env.yml", "conda.yml"]
+    for conda_file in conda_files:
+        if os.path.exists(os.path.join(project_dir, conda_file)):
+            project_type["has_conda_env"] = True
+            
+            # Try to extract conda env name
+            try:
+                with open(os.path.join(project_dir, conda_file), 'r') as f:
+                    for line in f:
+                        if line.startswith("name:"):
+                            project_type["conda_env_name"] = line.split(":", 1)[1].strip()
+                            break
+            except:
+                pass
+            
+            break
+    
+    # Check for virtual environment in the project
+    venv_dirs = ["venv", ".venv", "env", ".env"]
+    for venv_dir in venv_dirs:
+        venv_path = os.path.join(project_dir, venv_dir)
+        if os.path.exists(venv_path) and os.path.isdir(venv_path):
+            if os.path.exists(os.path.join(venv_path, "bin", "activate")) or \
+               os.path.exists(os.path.join(venv_path, "Scripts", "activate.bat")):
+                project_type["venv_path"] = venv_path
+                break
+    
+    return project_type
+
+def build_project(project_dir, updated_files):
+    """
+    Build or reinstall a project after its requirements have been updated.
+    Returns True if build was successful, False otherwise.
+    """
+    if not updated_files:
+        logging.info(f"No files were updated in {project_dir}, skipping build")
+        return False
+        
+    logging.info(f"Building project in {project_dir}")
+    
+    # Detect project type
+    project_type = detect_project_type(project_dir)
+    
+    build_commands = []
+    build_env = os.environ.copy()
+    
+    # Handle conda environments
+    if project_type["has_conda_env"] and project_type["conda_env_name"]:
+        conda_env_name = project_type["conda_env_name"]
+        logging.info(f"Rebuilding conda environment: {conda_env_name}")
+        
+        # Look for the conda environment file
+        conda_file = None
+        for filename in ["environment.yml", "conda-env.yml", "conda.yml"]:
+            if os.path.exists(os.path.join(project_dir, filename)):
+                conda_file = os.path.join(project_dir, filename)
+                break
+                
+        if conda_file:
+            # Check if environment exists
+            try:
+                env_check = subprocess.run(
+                    ["conda", "env", "list", "--json"],
+                    capture_output=True, text=True, check=True
+                )
+                env_data = json.loads(env_check.stdout)
+                
+                env_exists = any(
+                    conda_env_name == os.path.basename(env) 
+                    for env in env_data.get("envs", [])
+                )
+                
+                if env_exists:
+                    # Update existing environment
+                    build_commands.append(
+                        ["conda", "env", "update", "-n", conda_env_name, "-f", conda_file]
+                    )
+                else:
+                    # Create new environment
+                    build_commands.append(
+                        ["conda", "env", "create", "-f", conda_file]
+                    )
+            except:
+                logging.error(f"Error checking conda environments for {conda_env_name}")
+        
+    # Handle pip requirements in a virtual environment
+    elif project_type["venv_path"] and project_type["has_requirements"]:
+        venv_path = project_type["venv_path"]
+        requirements_file = os.path.join(project_dir, "requirements.txt")
+        
+        # Determine path to pip executable in the venv
+        if os.path.exists(os.path.join(venv_path, "bin", "pip")):
+            pip_path = os.path.join(venv_path, "bin", "pip")
+        elif os.path.exists(os.path.join(venv_path, "Scripts", "pip.exe")):
+            pip_path = os.path.join(venv_path, "Scripts", "pip.exe")
+        else:
+            logging.error(f"Could not find pip in virtual environment {venv_path}")
+            return False
+            
+        # Update packages in the virtual environment
+        build_commands.append(
+            [pip_path, "install", "-r", requirements_file, "--upgrade"]
+        )
+        
+        # If it's an editable install, reinstall the project
+        if project_type["has_setup_py"]:
+            build_commands.append(
+                [pip_path, "install", "-e", project_dir]
+            )
+            
+    # Handle projects with setup.py but no dedicated venv
+    elif project_type["has_setup_py"]:
+        # Just run pip install -e . with the system Python
+        build_commands.append(
+            [sys.executable, "-m", "pip", "install", "-e", project_dir]
+        )
+            
+    # Handle projects with pyproject.toml
+    elif project_type["has_pyproject"]:
+        # Check for poetry
+        try:
+            with open(os.path.join(project_dir, "pyproject.toml"), 'r') as f:
+                content = f.read()
+                if "tool.poetry" in content:
+                    # It's a poetry project
+                    build_commands.append(
+                        ["poetry", "install", "--directory", project_dir]
+                    )
+                else:
+                    # Generic pyproject.toml, try pip
+                    build_commands.append(
+                        [sys.executable, "-m", "pip", "install", "-e", project_dir]
+                    )
+        except:
+            logging.error(f"Error reading pyproject.toml in {project_dir}")
+            
+    # Handle Pipfile projects
+    elif project_type["has_pipfile"]:
+        build_commands.append(
+            ["pipenv", "install", "--dev"]
+        )
+        
+    # Handle simple requirements.txt without a venv
+    elif project_type["has_requirements"]:
+        requirements_file = os.path.join(project_dir, "requirements.txt")
+        build_commands.append(
+            [sys.executable, "-m", "pip", "install", "-r", requirements_file, "--user"]
+        )
+    
+    # Execute build commands
+    success = True
+    for cmd in build_commands:
+        try:
+            logging.info(f"Executing: {' '.join(cmd)}")
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                cwd=project_dir,
+                env=build_env,
+                timeout=600  # 10 minute timeout
+            )
+            
+            if result.returncode == 0:
+                logging.info(f"Command succeeded: {' '.join(cmd)}")
+            else:
+                logging.error(f"Command failed: {' '.join(cmd)}")
+                logging.error(f"Error output: {result.stderr}")
+                success = False
+                
+        except subprocess.TimeoutExpired:
+            logging.error(f"Command timed out: {' '.join(cmd)}")
+            success = False
+        except Exception as e:
+            logging.error(f"Error executing {' '.join(cmd)}: {str(e)}")
+            success = False
+    
+    # Create a signal file for successful builds
+    if success:
+        # Create a hash based on the project directory to make it unique
+        project_hash = hashlib.md5(project_dir.encode()).hexdigest()[:8]
+        create_signal(f"project_built_{project_hash}")
+        
+    return success
+
+# ----- STEP 5: SIGNAL SYSTEM -----
+
+def create_signal(signal_name):
+    """Create a signal file that can be detected by startup scripts."""
+    signal_file = os.path.join(SIGNAL_DIR, f"{signal_name}.signal")
+    timestamp = datetime.now().isoformat()
+    
+    with open(signal_file, 'w') as f:
+        f.write(timestamp)
+    
+    logging.info(f"Created signal: {signal_name}")
+    return signal_file
+
+def cleanup_old_signals(max_age_days=7):
+    """Clean up old signal files."""
+    now = datetime.now()
+    count = 0
+    
+    for signal_file in os.listdir(SIGNAL_DIR):
+        if signal_file.endswith(".signal"):
+            file_path = os.path.join(SIGNAL_DIR, signal_file)
+            file_age = now - datetime.fromtimestamp(os.path.getmtime(file_path))
+            
+            if file_age.days > max_age_days:
+                try:
+                    os.remove(file_path)
+                    count += 1
+                except:
+                    pass
+    
+    if count > 0:
+        logging.info(f"Cleaned up {count} old signal files")
+
+def update_knowledge_base():
+    """Update the package knowledge base from online sources."""
     if not requests:
         return False
     
     try:
-        # Try Python Package Index for top packages
-        response = requests.get("https://hugovk.github.io/top-pypi-packages/top-pypi-packages-30-days.json", timeout=5)
+        # Fetch known deprecated packages 
+        response = requests.get(
+            "https://raw.githubusercontent.com/styromaniac/smart-reqs/main/deprecated_packages.json", 
+            timeout=5
+        )
         if response.status_code == 200:
             data = response.json()
             
-            for pkg in data.get("rows", []):
-                name = pkg.get("project")
-                if name and name not in KNOWLEDGE_BASE.get("popularity_scores", {}):
-                    KNOWLEDGE_BASE.setdefault("popularity_scores", {})[name] = pkg.get("download_count", 0)
-    except:
-        pass
-    
-    try:
-        # Get deprecation data from Python Packaging Authority
-        for source in sources:
-            response = requests.get(source, timeout=5)
-            if response.status_code == 200:
-                content = response.text
-                
-                # Look for deprecated package mentions
-                deprecated_matches = re.findall(r'([\'"](.+?)[\'"]).+?deprecated|obsolete|unmaintained|abandoned', content, re.IGNORECASE)
-                
-                for _, package in deprecated_matches:
-                    if package and len(package) > 1 and package not in KNOWLEDGE_BASE.get("deprecations", {}):
-                        KNOWLEDGE_BASE.setdefault("deprecations", {})[package] = True
-                        logging.info(f"Learned about deprecated package: {package}")
-                
-                # Look for replacement suggestions
-                replacement_matches = re.findall(r'([\'"](.+?)[\'"]).+?replaced by.+?([\'"](.+?)[\'"])', content, re.IGNORECASE)
-                
-                for _, old_pkg, _, new_pkg in replacement_matches:
-                    if old_pkg and new_pkg and old_pkg not in KNOWLEDGE_BASE.get("replacements", {}):
-                        KNOWLEDGE_BASE.setdefault("replacements", {})[old_pkg] = new_pkg
-                        logging.info(f"Learned about replacement: {old_pkg} -> {new_pkg}")
-    except:
-        pass
-    
-    # Try to fetch vulnerability data
-    try:
-        response = requests.get("https://raw.githubusercontent.com/pyupio/safety-db/master/data/insecure_full.json", timeout=5)
-        if response.status_code == 200:
-            data = response.json()
+            # Update our knowledge base
+            for pkg, replacement in data.get("replacements", {}).items():
+                if pkg not in PACKAGE_KNOWLEDGE_BASE["replacements"]:
+                    PACKAGE_KNOWLEDGE_BASE["replacements"][pkg] = replacement
             
-            for package, vulns in data.items():
-                if package not in KNOWLEDGE_BASE.get("vulnerabilities", {}):
-                    KNOWLEDGE_BASE.setdefault("vulnerabilities", {})[package] = {
-                        "count": len(vulns),
-                        "ids": [vuln.get("id", "") for vuln in vulns if "id" in vuln]
-                    }
+            for pkg in data.get("deprecated", []):
+                if pkg not in PACKAGE_KNOWLEDGE_BASE["deprecations"]:
+                    PACKAGE_KNOWLEDGE_BASE["deprecations"][pkg] = True
+            
+            # Save the updated knowledge base
+            _save_knowledge_base()
+            return True
     except:
         pass
     
-    _save_knowledge_base()
-    return True
-
-def process_python_project(project_dir):
-    """Process a Python project directory for requirements updates."""
-    # Get config settings
-    config_file = os.path.expanduser("~/.config/smart-update-reqs/config.json")
-    if os.path.exists(config_file):
-        with open(config_file, 'r') as f:
-            config = json.load(f)
-    else:
-        config = {
-            "quiet_mode": False,
-            "continue_on_build_error": True
-        }
-    
-    quiet_mode = config.get("quiet_mode", False)
-    continue_on_error = config.get("continue_on_build_error", True)
-    
-    if not quiet_mode:
-        logging.info(f"Processing project: {project_dir}")
-    
-    updates_made = False
-    updated_files = []
-    problem_packages = []
-    
-    # Check for requirements.txt
-    requirements_file = os.path.join(project_dir, "requirements.txt")
-    if os.path.exists(requirements_file):
-        if update_requirements_file(requirements_file, project_dir):
-            updates_made = True
-            updated_files.append(requirements_file)
-    
-    # Check for dev-requirements.txt
-    dev_requirements_file = os.path.join(project_dir, "dev-requirements.txt")
-    if os.path.exists(dev_requirements_file):
-        if update_requirements_file(dev_requirements_file, project_dir):
-            updates_made = True
-            updated_files.append(dev_requirements_file)
-    
-    # Check for test-requirements.txt
-    test_requirements_file = os.path.join(project_dir, "test-requirements.txt")
-    if os.path.exists(test_requirements_file):
-        if update_requirements_file(test_requirements_file, project_dir):
-            updates_made = True
-            updated_files.append(test_requirements_file)
-    
-    # Check for requirements in a requirements directory
-    req_dir = os.path.join(project_dir, "requirements")
-    if os.path.exists(req_dir) and os.path.isdir(req_dir):
-        for file in os.listdir(req_dir):
-            if file.endswith(".txt"):
-                req_file = os.path.join(req_dir, file)
-                if update_requirements_file(req_file, project_dir):
-                    updates_made = True
-                    updated_files.append(req_file)
-    
-    # Check for pyproject.toml
-    pyproject_file = os.path.join(project_dir, "pyproject.toml")
-    if os.path.exists(pyproject_file):
-        # TODO: Implement pyproject.toml parsing and updating
-        pass
-    
-    # Check for setup.py
-    setup_file = os.path.join(project_dir, "setup.py")
-    if os.path.exists(setup_file):
-        # TODO: Implement setup.py parsing and updating
-        pass
-    
-    # If updates were made, rebuild the project
-    if updates_made:
-        if not quiet_mode:
-            logging.info(f"Updates made to {project_dir}, rebuilding...")
-        
-        # Initialize managers
-        env_manager = EnvironmentManager()
-        build_manager = BuildManager(env_manager)
-        test_manager = TestManager(env_manager)
-        
-        # For each updated requirements file, install dependencies
-        for req_file in updated_files:
-            success, project_problem_packages = env_manager.install_dependencies(
-                project_dir, 
-                req_file, 
-                quiet_mode=quiet_mode, 
-                continue_on_error=continue_on_error
-            )
-            problem_packages.extend(project_problem_packages)
-        
-        # Build project if it has compiled components
-        if build_manager.has_compiled_components(project_dir):
-            build_success = build_manager.build_project(project_dir, 
-                                                      quiet_mode=quiet_mode, 
-                                                      continue_on_error=continue_on_error)
-            if not build_success and not quiet_mode:
-                logging.warning(f"Build failed for {project_dir}, but continuing...")
-        
-        # Run tests if available
-        if test_manager.has_tests(project_dir):
-            test_success = test_manager.run_tests(project_dir, 
-                                               quiet_mode=quiet_mode, 
-                                               continue_on_error=continue_on_error)
-            if not test_success and not quiet_mode:
-                logging.warning(f"Tests failed for {project_dir}, but continuing...")
-    
-    # Print summary if there were problems
-    if problem_packages and not quiet_mode:
-        logging.warning(f"The following packages had installation issues for {project_dir}:")
-        for pkg in problem_packages:
-            logging.warning(f"  - {pkg}")
-        logging.warning("These packages may need manual installation or additional build dependencies.")
-    
-    return updates_made
+    return False
 
 def print_system_info():
     """Print information about the system."""
@@ -2379,7 +882,7 @@ def print_system_info():
     
     # Log package versions
     logging.info("Dependency versions:")
-    deps = ["requests", "packaging", "safety", "pipdeptree", "importlib_metadata"]
+    deps = ["requests", "packaging", "safety"]
     for dep in deps:
         try:
             pkg = __import__(dep)
@@ -2388,66 +891,79 @@ def print_system_info():
         except ImportError:
             logging.info(f"  {dep}: not installed")
 
+def process_python_project(project_dir):
+    """Process a Python project directory for requirements updates."""
+    logging.info(f"Processing project: {project_dir}")
+    
+    updated_files = []
+    
+    # Check for requirements.txt
+    requirements_file = os.path.join(project_dir, "requirements.txt")
+    if os.path.exists(requirements_file):
+        if update_requirements_file(requirements_file):
+            updated_files.append(requirements_file)
+    
+    # Check for dev-requirements.txt
+    dev_requirements_file = os.path.join(project_dir, "dev-requirements.txt")
+    if os.path.exists(dev_requirements_file):
+        if update_requirements_file(dev_requirements_file):
+            updated_files.append(dev_requirements_file)
+    
+    # Check for test-requirements.txt
+    test_requirements_file = os.path.join(project_dir, "test-requirements.txt")
+    if os.path.exists(test_requirements_file):
+        if update_requirements_file(test_requirements_file):
+            updated_files.append(test_requirements_file)
+    
+    # Check for requirements in a requirements directory
+    req_dir = os.path.join(project_dir, "requirements")
+    if os.path.exists(req_dir) and os.path.isdir(req_dir):
+        for file in os.listdir(req_dir):
+            if file.endswith(".txt"):
+                req_file = os.path.join(req_dir, file)
+                if update_requirements_file(req_file):
+                    updated_files.append(req_file)
+    
+    # Build the project if files were updated
+    if updated_files:
+        # Create a "project updated" signal before building
+        project_hash = hashlib.md5(project_dir.encode()).hexdigest()[:8]
+        create_signal(f"project_updated_{project_hash}")
+        
+        # Get config to see if we should build
+        config_file = os.path.expanduser("~/.config/smart-update-reqs/config.json")
+        build_enabled = True
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+                build_enabled = config.get("build_after_update", True)
+        
+        # Build if enabled
+        if build_enabled:
+            build_project(project_dir, updated_files)
+    
+    return len(updated_files) > 0
+
 def main():
     """Main function to find and update Python projects."""
-    # Get command-line arguments
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Smart Requirements Updater')
-    parser.add_argument('--quiet', '-q', action='store_true', help='Only show errors and summary')
-    parser.add_argument('--errors-only', '-e', action='store_true', help='Only show errors')
-    parser.add_argument('--continue-on-error', '-c', action='store_true', help='Continue despite build or installation errors')
-    parser.add_argument('--skip-build', '-s', action='store_true', help='Skip building and testing after updating requirements')
-    parser.add_argument('--skip-conda-update', action='store_true', help='Skip updating Anaconda/Miniconda')
-    parser.add_argument('--config', type=str, help='Path to custom config file')
-    args = parser.parse_args()
-    
-    # Configure logging based on verbosity
-    if args.errors_only:
-        logging.basicConfig(
-            level=logging.ERROR,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(LOG_FILE),
-                logging.StreamHandler(sys.stdout)
-            ]
-        )
-    elif args.quiet:
-        logging.basicConfig(
-            level=logging.WARNING,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(LOG_FILE),
-                logging.StreamHandler(sys.stdout)
-            ]
-        )
-    
-    logging.info("Starting smart requirements updater")
-    
-    # Fix regex escape sequences
-    fix_regex_escape_sequences()
-    
-    # Update Anaconda/Miniconda if installed and not skipped
-    if not args.skip_conda_update:
-        update_conda_installation()
+    logging.info("Starting enhanced smart requirements updater")
     
     # Print system info
     print_system_info()
     
-    # Dynamically fetch package repositories
-    dynamic_fetch_package_repositories()
+    # Create a startup signal
+    create_signal("updater_started")
     
-    # Initialize all required knowledge base keys
-    initialize_knowledge_base_keys()
+    # Clean up old signals
+    cleanup_old_signals()
     
-    # Learn from community data
-    learn_from_community_data()
+    # Try to update the knowledge base
+    update_knowledge_base()
     
     # Load config or create default
-    config_path = args.config if args.config else os.path.expanduser("~/.config/smart-update-reqs/config.json")
-    
-    if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
+    config_file = os.path.expanduser("~/.config/smart-update-reqs/config.json")
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
             config = json.load(f)
     else:
         config = {
@@ -2455,38 +971,19 @@ def main():
             "exclude_directories": [
                 "~/anaconda3", "~/miniconda3", "~/venv", "~/.venv"
             ],
-            "auto_rebuild": not args.skip_build,
-            "auto_test": not args.skip_build,
-            "rebuild_timeout": 600,  # 10 minutes timeout for rebuilds
-            "prompt_before_rebuild": False,  # Set to True to prompt before rebuilding
-            "quiet_mode": args.quiet or args.errors_only,
-            "continue_on_build_error": args.continue_on_error or True,
-            "update_conda": not args.skip_conda_update
+            "build_after_update": True,
+            "update_conda": True
         }
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        with open(config_path, 'w') as f:
+        os.makedirs(os.path.dirname(config_file), exist_ok=True)
+        with open(config_file, 'w') as f:
             json.dump(config, f, indent=2)
     
-    # Override config with command line arguments
-    if args.quiet or args.errors_only:
-        config["quiet_mode"] = True
-    if args.continue_on_error:
-        config["continue_on_build_error"] = True
-    if args.skip_build:
-        config["auto_rebuild"] = False
-        config["auto_test"] = False
-    if args.skip_conda_update:
-        config["update_conda"] = False
-    
-    # Save updated config
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=2)
+    # STEP 1: Update conda if enabled
+    if config.get("update_conda", True):
+        update_conda_environments()
     
     projects_updated = 0
     projects_processed = 0
-    projects_rebuilt = 0
-    projects_tested = 0
-    error_projects = []
     
     # Process each scan directory
     for scan_dir in config["scan_directories"]:
@@ -2496,8 +993,7 @@ def main():
             continue
         
         python_projects = find_python_projects(scan_dir)
-        if not config.get("quiet_mode", False):
-            logging.info(f"Found {len(python_projects)} Python projects in {scan_dir}")
+        logging.info(f"Found {len(python_projects)} Python projects in {scan_dir}")
         
         # Expand excluded directories
         expanded_exclude_dirs = [os.path.expanduser(d) for d in config.get("exclude_directories", [])]
@@ -2505,49 +1001,29 @@ def main():
         for project in python_projects:
             # Skip excluded directories
             if any(project.startswith(exclude) for exclude in expanded_exclude_dirs):
-                if not config.get("quiet_mode", False):
-                    logging.info(f"Skipping excluded project: {project}")
+                logging.info(f"Skipping excluded project: {project}")
                 continue
             
             projects_processed += 1
-            try:
-                if process_python_project(project):
-                    projects_updated += 1
-                    
-                    # Initialize environment manager for checking rebuild status
-                    env_manager = EnvironmentManager()
-                    build_manager = BuildManager(env_manager)
-                    test_manager = TestManager(env_manager)
-                    
-                    # Log rebuild and test status
-                    if build_manager.has_compiled_components(project):
-                        projects_rebuilt += 1
-                    
-                    if test_manager.has_tests(project):
-                        projects_tested += 1
-            except Exception as e:
-                error_projects.append((project, str(e)))
-                logging.error(f"Error processing {project}: {e}")
-                if not config.get("continue_on_build_error", True):
-                    break
+            if process_python_project(project):
+                projects_updated += 1
     
-    # Print summary
     logging.info(f"Completed processing {projects_processed} Python projects")
     logging.info(f"Updated {projects_updated} projects")
     
-    if config.get("auto_rebuild", True):
-        logging.info(f"Rebuilt {projects_rebuilt} projects with compiled components")
-        logging.info(f"Tested {projects_tested} projects")
-    
-    if error_projects:
-        logging.warning("The following projects had errors:")
-        for project, error in error_projects:
-            logging.warning(f"  - {project}: {error}")
-    
-    # Save final knowledge base
-    _save_knowledge_base()
+    # Create a completion signal
+    create_signal("updater_completed")
 
 if __name__ == "__main__":
+    # Handle graceful termination
+    def signal_handler(sig, frame):
+        logging.info("Received termination signal, creating abort signal")
+        create_signal("updater_aborted")
+        sys.exit(0)
+        
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     main()
 EOF
 
@@ -2594,20 +1070,152 @@ cat > ~/.config/smart-update-reqs/config.json << 'EOF'
     "~/venv", 
     "~/.venv"
   ],
-  "auto_rebuild": true,
-  "auto_test": true,
-  "rebuild_timeout": 600,
-  "quiet_mode": false,
-  "continue_on_build_error": true
+  "build_after_update": true,
+  "update_conda": true
 }
 EOF
+
+# Create startup script helper to check for signals
+cat > ~/.local/bin/check-req-signals.sh << 'EOF'
+#!/bin/bash
+# Helper script to check for requirement update signals
+
+SIGNAL_DIR=~/.config/smart-update-reqs/signals
+
+# Function to check if a signal exists
+check_signal() {
+  local signal_name=$1
+  local max_age_seconds=${2:-3600}  # Default: 1 hour
+  
+  # Find matching signal files
+  for signal_file in "$SIGNAL_DIR"/${signal_name}*.signal; do
+    if [ -f "$signal_file" ]; then
+      # Check age
+      file_mtime=$(stat -c %Y "$signal_file" 2>/dev/null || stat -f %m "$signal_file" 2>/dev/null)
+      current_time=$(date +%s)
+      age_seconds=$((current_time - file_mtime))
+      
+      if [ $age_seconds -le $max_age_seconds ]; then
+        return 0  # Signal exists and is recent
+      fi
+    fi
+  done
+  
+  return 1  # No recent signal found
+}
+
+# Check if any conda environment was updated
+conda_updated() {
+  check_signal "conda_env_updated_" "$@"
+}
+
+# Check if any project was updated
+project_updated() {
+  check_signal "project_updated_" "$@"
+}
+
+# Check if any project was built
+project_built() {
+  check_signal "project_built_" "$@"
+}
+
+# Check if updater is running
+updater_running() {
+  check_signal "updater_started" "$@" && ! check_signal "updater_completed" "$@" && ! check_signal "updater_aborted" "$@"
+}
+
+# Check specific conda environment
+conda_env_updated() {
+  local env_name=$1
+  shift
+  check_signal "conda_env_updated_${env_name}" "$@"
+}
+
+# Main functionality
+case "$1" in
+  --any-conda-updated)
+    conda_updated "${2:-3600}" && echo "yes" || echo "no"
+    ;;
+  --any-project-updated)
+    project_updated "${2:-3600}" && echo "yes" || echo "no"
+    ;;
+  --any-project-built)
+    project_built "${2:-3600}" && echo "yes" || echo "no" 
+    ;;
+  --updater-running)
+    updater_running "${2:-3600}" && echo "yes" || echo "no"
+    ;;
+  --conda-env-updated)
+    if [ -z "$2" ]; then
+      echo "Error: Please specify environment name" >&2
+      exit 1
+    fi
+    conda_env_updated "$2" "${3:-3600}" && echo "yes" || echo "no"
+    ;;
+  --list-signals)
+    ls -la "$SIGNAL_DIR"
+    ;;
+  --help|*)
+    echo "Usage: $0 [OPTION]"
+    echo "Check for requirement update signals."
+    echo ""
+    echo "Options:"
+    echo "  --any-conda-updated [MAX_AGE]   Check if any conda environment was updated"
+    echo "  --any-project-updated [MAX_AGE] Check if any project was updated"
+    echo "  --any-project-built [MAX_AGE]   Check if any project was built"
+    echo "  --updater-running [MAX_AGE]     Check if updater is currently running"
+    echo "  --conda-env-updated ENV [MAX_AGE] Check if specific conda environment was updated"
+    echo "  --list-signals                  List all signals" 
+    echo ""
+    echo "MAX_AGE is maximum age in seconds (default: 3600)"
+    ;;
+esac
+EOF
+
+chmod +x ~/.local/bin/check-req-signals.sh
 
 # Enable and start the timer
 systemctl --user enable smart-update-reqs.timer
 systemctl --user start smart-update-reqs.timer
 
-echo "Smart requirements updater has been installed!"
+# Create a one-line example script for startup integration
+cat > ~/example-startup-integration.sh << 'EOF'
+#!/bin/bash
+# Example of how to use the signal system in startup scripts
+
+# Check if any conda environments were updated in the last hour
+if [ "$(~/.local/bin/check-req-signals.sh --any-conda-updated 3600)" == "yes" ]; then
+  echo "Conda environments were updated. Taking appropriate actions..."
+  # Your startup logic here
+fi
+
+# Check if a specific conda environment was updated
+if [ "$(~/.local/bin/check-req-signals.sh --conda-env-updated myenv 3600)" == "yes" ]; then
+  echo "myenv was updated. Restarting services..."
+  # Restart specific services that depend on this environment
+fi
+
+# Check if updater is currently running
+if [ "$(~/.local/bin/check-req-signals.sh --updater-running)" == "yes" ]; then
+  echo "Updater is currently running. Waiting before starting services..."
+  # Add delay or wait logic
+fi
+EOF
+
+chmod +x ~/example-startup-integration.sh
+
+echo "Enhanced Smart Requirements Updater has been installed!"
+echo "The script implements the five-step process:"
+echo "1. conda update - Updates all conda environments"
+echo "2. backup requirements files - Creates backups in ~/.config/smart-update-reqs/backups"
+echo "3. update requirements files - Updates dependencies to latest versions"
+echo "4. build projects - Rebuilds projects with updated requirements"
+echo "5. signal system - Creates signals in ~/.config/smart-update-reqs/signals"
+echo ""
 echo "The script will run on boot and weekly thereafter"
 echo "Configuration file: ~/.config/smart-update-reqs/config.json"
 echo "Logs: ~/.config/smart-update-reqs/update_log.txt"
 echo "To run manually: ~/.local/bin/smart_update_requirements.py"
+echo ""
+echo "Signal checking tool: ~/.local/bin/check-req-signals.sh"
+echo "Example startup integration: ~/example-startup-integration.sh"
