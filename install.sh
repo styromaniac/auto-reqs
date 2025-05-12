@@ -1,4 +1,89 @@
-#!/bin/bash
+def fix_regex_escape_sequences():
+    """Fix invalid escape sequences in regex patterns throughout the script."""
+    # This is a global fix for all regex patterns
+    import re
+    
+    # Get all the original regex functions/methods
+    original_compile = re.compile
+    original_search = re.search
+    original_findall = re.findall
+    original_match = re.match
+    original_finditer = re.finditer
+    original_sub = re.sub
+    original_subn = re.subn
+    original_split = re.split
+    
+    # Create wrapper functions that automatically convert patterns to raw strings
+    def safe_compile(pattern, *args, **kwargs):
+        if isinstance(pattern, str) and not pattern.startswith('r'):
+            pattern = pattern.replace('\\', '\\\\')
+        return original_compile(pattern, *args, **kwargs)
+    
+    def safe_search(pattern, *args, **kwargs):
+        if isinstance(pattern, str) and not pattern.startswith('r'):
+            pattern = pattern.replace('\\', '\\\\')
+        return original_search(pattern, *args, **kwargs)
+    
+    def safe_findall(pattern, *args, **kwargs):
+        if isinstance(pattern, str) and not pattern.startswith('r'):
+            pattern = pattern.replace('\\', '\\\\')
+        return original_findall(pattern, *args, **kwargs)
+    
+    def safe_match(pattern, *args, **kwargs):
+        if isinstance(pattern, str) and not pattern.startswith('r'):
+            pattern = pattern.replace('\\', '\\\\')
+        return original_match(pattern, *args, **kwargs)
+    
+    def safe_finditer(pattern, *args, **kwargs):
+        if isinstance(pattern, str) and not pattern.startswith('r'):
+            pattern = pattern.replace('\\', '\\\\')
+        return original_finditer(pattern, *args, **kwargs)
+    
+    def safe_sub(pattern, *args, **kwargs):
+        if isinstance(pattern, str) and not pattern.startswith('r'):
+            pattern = pattern.replace('\\', '\\\\')
+        return original_sub(pattern, *args, **kwargs)
+    
+    def safe_subn(pattern, *args, **kwargs):
+        if isinstance(pattern, str) and not pattern.startswith('r'):
+            pattern = pattern.replace('\\', '\\\\')
+        return original_subn(pattern, *args, **kwargs)
+    
+    def safe_split(pattern, *args, **kwargs):
+        if isinstance(pattern, str) and not pattern.startswith('r'):
+            pattern = pattern.replace('\\', '\\\\')
+        return original_split(pattern, *args, **kwargs)
+    
+    # Replace the original functions with our safe versions
+    re.compile = safe_compile
+    re.search = safe_search
+    re.findall = safe_findall
+    re.match = safe_match
+    re.finditer = safe_finditer
+    re.sub = safe_sub
+    re.subn = safe_subn
+    re.split = safe_split
+    
+    logging.info("Fixed regex escape sequences for safer pattern matching")
+    return True
+
+# Initialize compatibility dictionary if needed
+def initialize_knowledge_base_keys():
+    """Make sure all required keys exist in the knowledge base."""
+    global KNOWLEDGE_BASE
+    required_keys = [
+        "replacements", "compatibility", "api_signatures", "deprecations",
+        "vulnerabilities", "popularity_scores", "update_history", "usage_signatures"
+    ]
+    
+    for key in required_keys:
+        if key not in KNOWLEDGE_BASE:
+            KNOWLEDGE_BASE[key] = {}
+    
+    if "last_update" not in KNOWLEDGE_BASE:
+        KNOWLEDGE_BASE["last_update"] = datetime.now().isoformat()
+    
+    return True#!/bin/bash
 # smart-update-reqs.sh - A script to install the smart auto-requirements updater
 
 # Create directories
@@ -72,6 +157,13 @@ if os.path.exists(KNOWLEDGE_BASE_FILE):
     with open(KNOWLEDGE_BASE_FILE, 'r') as f:
         try:
             KNOWLEDGE_BASE = json.load(f)
+            # Ensure all required keys exist
+            for key in ["replacements", "compatibility", "api_signatures", "deprecations", 
+                       "vulnerabilities", "popularity_scores", "update_history"]:
+                if key not in KNOWLEDGE_BASE:
+                    KNOWLEDGE_BASE[key] = {}
+            if "last_update" not in KNOWLEDGE_BASE:
+                KNOWLEDGE_BASE["last_update"] = datetime.now().isoformat()
         except json.JSONDecodeError:
             KNOWLEDGE_BASE = {
                 "replacements": {},
@@ -2023,11 +2115,17 @@ def main():
     """Main function to find and update Python projects."""
     logging.info("Starting smart requirements updater")
     
+    # Fix regex escape sequences
+    fix_regex_escape_sequences()
+    
     # Print system info
     print_system_info()
     
     # Dynamically fetch package repositories
     dynamic_fetch_package_repositories()
+    
+    # Initialize all required knowledge base keys
+    initialize_knowledge_base_keys()
     
     # Learn from community data
     learn_from_community_data()
