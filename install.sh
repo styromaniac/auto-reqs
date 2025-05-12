@@ -1553,37 +1553,415 @@ def learn_from_community_data():
     _save_knowledge_base()
     return True
 
+class EnvironmentManager:
+    """Detect and manage Python environments for projects."""
+    
+    def __init__(self):
+        self.env_cache = {}
+    
+    def detect_environment(self, project_dir):
+        """
+        Detect the type of environment used by a project.
+        Returns a dict with environment information.
+        """
+        if project_dir in self.env_cache:
+            return self.env_cache[project_dir]
+        
+        env_info = {
+            "type": None,          # venv, conda, poetry, pipenv, system
+            "path": None,          # Path to the environment
+            "python_path": None,   # Path to the Python executable
+            "package_manager": None  # pip, conda, poetry, pipenv
+        }
+        
+        # Check for virtual environment in project directory
+        venv_dirs = [
+            os.path.join(project_dir, "venv"),
+            os.path.join(project_dir, ".venv"),
+            os.path.join(project_dir, "env"),
+            os.path.join(project_dir, ".env")
+        ]
+        
+        for venv_dir in venv_dirs:
+            if os.path.exists(venv_dir) and os.path.isdir(venv_dir):
+                # Found a potential virtual environment
+                if os.path.exists(os.path.join(venv_dir, "bin", "python")) or \
+                   os.path.exists(os.path.join(venv_dir, "Scripts", "python.exe")):
+                    env_info["type"] = "venv"
+                    env_info["path"] = venv_dir
+                    
+                    # Determine python path
+                    if os.path.exists(os.path.join(venv_dir, "bin", "python")):
+                        env_info["python_path"] = os.path.join(venv_dir, "bin", "python")
+                    else:
+                        env_info["python_path"] = os.path.join(venv_dir, "Scripts", "python.exe")
+                    
+                    env_info["package_manager"] = "pip"
+                    break
+        
+        # Check for conda environment
+        conda_files = [
+            os.path.join(project_dir, "environment.yml"),
+            os.path.join(project_dir, "environment.yaml"),
+            os.path.join(project_dir, "conda-environment.yml"),
+            os.path.join(project_dir, "conda.yml")
+        ]
+        
+        for conda_file in conda_files:
+            if os.path.exists(conda_file):
+                env_info["type"] = "conda"
+                
+                # Try to extract environment name from the file
+                try:
+                    with open(conda_file, 'r') as f:
+                        content = f.read()
+                        # Extract name from the conda environment file
+                        match = re.search(r'name:\s*([^\s]+)', content)
+                        if match:
+                            env_name = match.group(1)
+                            env_info["name"] = env_name
+                except:
+                    pass
+                
+                env_info["package_manager"] = "conda"
+                break
+        
+        # Check for Poetry
+        if os.path.exists(os.path.join(project_dir, "pyproject.toml")):
+            try:
+                with open(os.path.join(project_dir, "pyproject.toml"), 'r') as f:
+                    content = f.read()
+                    if "[tool.poetry]" in content:
+                        env_info["type"] = "poetry"
+                        env_info["package_manager"] = "poetry"
+            except:
+                pass
+        
+        # Check for Pipenv
+        if os.path.exists(os.path.join(project_dir, "Pipfile")):
+            env_info["type"] = "pipenv"
+            env_info["package_manager"] = "pipenv"
+        
+        # If we couldn't detect an environment, assume system Python
+        if env_info["type"] is None:
+            env_info["type"] = "system"
+            env_info["python_path"] = sys.executable
+            env_info["package_manager"] = "pip"
+        
+        # Cache the result
+        self.env_cache[project_dir] = env_info
+        return env_info
+    
+    def get_python_executable(self, project_dir):
+        """Get the Python executable for the project's environment."""
+        env_info = self.detect_environment(project_dir)
+        
+        if env_info["python_path"]:
+            return env_info["python_path"]
+        
+        # Handle conda environments differently
+        if env_info["type"] == "conda" and "name" in env_info:
+            try:
+                # Try to get the python path using conda info
+                result = subprocess.run(
+                    ["conda", "info", "--envs", "--json"],
+                    capture_output=True, text=True
+                )
+                
+                if result.returncode == 0:
+                    data = json.loads(result.stdout)
+                    envs = data.get("envs", [])
+                    
+                    for env_path in envs:
+                        if os.path.basename(env_path) == env_info["name"]:
+                            if os.path.exists(os.path.join(env_path, "bin", "python")):
+                                return os.path.join(env_path, "bin", "python")
+                            elif os.path.exists(os.path.join(env_path, "python.exe")):
+                                return os.path.join(env_path, "python.exe")
+            except:
+                pass
+        
+        # Fall back to system Python
+        return sys.executable
+    
+    def install_dependencies(self, project_dir, requirements_file=None):
+        """Install dependencies for a project based on its environment type."""
+        env_info = self.detect_environment(project_dir)
+        success = False
+        
+        if not requirements_file:
+            requirements_file = os.path.join(project_dir, "requirements.txt")
+            if not os.path.exists(requirements_file):
+                logging.warning(f"No requirements.txt found in {project_dir}")
+                return False
+        
+        logging.info(f"Installing dependencies from {requirements_file} for {project_dir}")
+        
+        try:
+            if env_info["package_manager"] == "pip":
+                # Use the environment's Python to install
+                python_exec = self.get_python_executable(project_dir)
+                cmd = [python_exec, "-m", "pip", "install", "-r", requirements_file]
+                
+                result = subprocess.run(
+                    cmd, cwd=project_dir, capture_output=True, text=True
+                )
+                
+                if result.returncode == 0:
+                    logging.info(f"Successfully installed dependencies for {project_dir}")
+                    success = True
+                else:
+                    logging.error(f"Failed to install dependencies: {result.stderr}")
+            
+            elif env_info["package_manager"] == "conda":
+                # Handle conda environments
+                if "name" in env_info:
+                    cmd = ["conda", "install", "--file", requirements_file, "-n", env_info["name"], "-y"]
+                    
+                    result = subprocess.run(
+                        cmd, cwd=project_dir, capture_output=True, text=True
+                    )
+                    
+                    if result.returncode == 0:
+                        logging.info(f"Successfully installed dependencies for conda env {env_info['name']}")
+                        success = True
+                    else:
+                        logging.error(f"Failed to install conda dependencies: {result.stderr}")
+            
+            elif env_info["package_manager"] == "poetry":
+                # Handle poetry projects
+                cmd = ["poetry", "install"]
+                
+                result = subprocess.run(
+                    cmd, cwd=project_dir, capture_output=True, text=True
+                )
+                
+                if result.returncode == 0:
+                    logging.info(f"Successfully installed dependencies with poetry for {project_dir}")
+                    success = True
+                else:
+                    logging.error(f"Failed to install poetry dependencies: {result.stderr}")
+            
+            elif env_info["package_manager"] == "pipenv":
+                # Handle pipenv projects
+                cmd = ["pipenv", "install"]
+                
+                result = subprocess.run(
+                    cmd, cwd=project_dir, capture_output=True, text=True
+                )
+                
+                if result.returncode == 0:
+                    logging.info(f"Successfully installed dependencies with pipenv for {project_dir}")
+                    success = True
+                else:
+                    logging.error(f"Failed to install pipenv dependencies: {result.stderr}")
+        
+        except Exception as e:
+            logging.error(f"Error installing dependencies: {e}")
+        
+        return success
+
+class BuildManager:
+    """Handle project building and compilation."""
+    
+    def __init__(self, env_manager):
+        self.env_manager = env_manager
+    
+    def has_compiled_components(self, project_dir):
+        """Check if the project has components that need compilation."""
+        # Look for setup.py with extensions
+        setup_py = os.path.join(project_dir, "setup.py")
+        if os.path.exists(setup_py):
+            try:
+                with open(setup_py, 'r') as f:
+                    content = f.read()
+                    # Check for Extension or CythonExtension
+                    if "Extension(" in content or "CythonExtension" in content or "Cython" in content:
+                        return True
+            except:
+                pass
+        
+        # Look for .c, .cpp or .pyx files
+        for root, _, files in os.walk(project_dir):
+            for file in files:
+                if file.endswith(('.c', '.cpp', '.cxx', '.pyx', '.pxd')):
+                    return True
+        
+        return False
+    
+    def build_project(self, project_dir):
+        """Build the project if it has compiled components."""
+        if not self.has_compiled_components(project_dir):
+            logging.info(f"No compiled components detected in {project_dir}")
+            return True
+        
+        logging.info(f"Building project with compiled components: {project_dir}")
+        env_info = self.env_manager.detect_environment(project_dir)
+        python_exec = self.env_manager.get_python_executable(project_dir)
+        success = False
+        
+        try:
+            # Try setup.py build
+            if os.path.exists(os.path.join(project_dir, "setup.py")):
+                cmd = [python_exec, "setup.py", "build_ext", "--inplace"]
+                
+                result = subprocess.run(
+                    cmd, cwd=project_dir, capture_output=True, text=True
+                )
+                
+                if result.returncode == 0:
+                    logging.info(f"Successfully built extensions for {project_dir}")
+                    success = True
+                else:
+                    logging.error(f"Failed to build extensions: {result.stderr}")
+                    
+                    # Try regular build
+                    cmd = [python_exec, "setup.py", "build"]
+                    
+                    result = subprocess.run(
+                        cmd, cwd=project_dir, capture_output=True, text=True
+                    )
+                    
+                    if result.returncode == 0:
+                        logging.info(f"Successfully built project {project_dir}")
+                        success = True
+                    else:
+                        logging.error(f"Failed to build project: {result.stderr}")
+            
+            # Try pip install -e . for development mode
+            if not success:
+                cmd = [python_exec, "-m", "pip", "install", "-e", "."]
+                
+                result = subprocess.run(
+                    cmd, cwd=project_dir, capture_output=True, text=True
+                )
+                
+                if result.returncode == 0:
+                    logging.info(f"Successfully installed project in development mode: {project_dir}")
+                    success = True
+                else:
+                    logging.error(f"Failed to install in development mode: {result.stderr}")
+        
+        except Exception as e:
+            logging.error(f"Error building project: {e}")
+        
+        return success
+
+class TestManager:
+    """Handle project testing."""
+    
+    def __init__(self, env_manager):
+        self.env_manager = env_manager
+    
+    def has_tests(self, project_dir):
+        """Check if the project has tests."""
+        test_indicators = [
+            os.path.join(project_dir, "tests"),
+            os.path.join(project_dir, "test"),
+            os.path.join(project_dir, "pytest.ini"),
+            os.path.join(project_dir, "conftest.py"),
+            os.path.join(project_dir, "tox.ini")
+        ]
+        
+        for indicator in test_indicators:
+            if os.path.exists(indicator):
+                return True
+        
+        # Check if setup.py has test or pytest in it
+        setup_py = os.path.join(project_dir, "setup.py")
+        if os.path.exists(setup_py):
+            try:
+                with open(setup_py, 'r') as f:
+                    content = f.read()
+                    if "pytest" in content or "unittest" in content or "test_suite" in content:
+                        return True
+            except:
+                pass
+        
+        return False
+    
+    def run_tests(self, project_dir):
+        """Run the project's tests."""
+        if not self.has_tests(project_dir):
+            logging.info(f"No tests detected in {project_dir}")
+            return True
+        
+        logging.info(f"Running tests for project: {project_dir}")
+        env_info = self.env_manager.detect_environment(project_dir)
+        python_exec = self.env_manager.get_python_executable(project_dir)
+        success = False
+        
+        try:
+            # Try pytest first
+            cmd = [python_exec, "-m", "pytest"]
+            
+            result = subprocess.run(
+                cmd, cwd=project_dir, capture_output=True, text=True, timeout=300  # 5-minute timeout
+            )
+            
+            if result.returncode == 0:
+                logging.info(f"Tests passed for {project_dir}")
+                success = True
+            else:
+                logging.warning(f"Tests failed for {project_dir}: {result.stderr}")
+                
+                # Try unittest as fallback
+                cmd = [python_exec, "-m", "unittest", "discover"]
+                
+                result = subprocess.run(
+                    cmd, cwd=project_dir, capture_output=True, text=True, timeout=300
+                )
+                
+                if result.returncode == 0:
+                    logging.info(f"Unittest tests passed for {project_dir}")
+                    success = True
+                else:
+                    logging.warning(f"Unittest tests failed for {project_dir}: {result.stderr}")
+        
+        except subprocess.TimeoutExpired:
+            logging.error(f"Tests timed out for {project_dir}")
+        except Exception as e:
+            logging.error(f"Error running tests: {e}")
+        
+        return success
+
 def process_python_project(project_dir):
     """Process a Python project directory for requirements updates."""
     logging.info(f"Processing project: {project_dir}")
     
     updates_made = False
+    updated_files = []
     
     # Check for requirements.txt
     requirements_file = os.path.join(project_dir, "requirements.txt")
     if os.path.exists(requirements_file):
         if update_requirements_file(requirements_file, project_dir):
             updates_made = True
+            updated_files.append(requirements_file)
     
     # Check for dev-requirements.txt
     dev_requirements_file = os.path.join(project_dir, "dev-requirements.txt")
     if os.path.exists(dev_requirements_file):
         if update_requirements_file(dev_requirements_file, project_dir):
             updates_made = True
+            updated_files.append(dev_requirements_file)
     
     # Check for test-requirements.txt
     test_requirements_file = os.path.join(project_dir, "test-requirements.txt")
     if os.path.exists(test_requirements_file):
         if update_requirements_file(test_requirements_file, project_dir):
             updates_made = True
+            updated_files.append(test_requirements_file)
     
     # Check for requirements in a requirements directory
     req_dir = os.path.join(project_dir, "requirements")
     if os.path.exists(req_dir) and os.path.isdir(req_dir):
         for file in os.listdir(req_dir):
             if file.endswith(".txt"):
-                if update_requirements_file(os.path.join(req_dir, file), project_dir):
+                req_file = os.path.join(req_dir, file)
+                if update_requirements_file(req_file, project_dir):
                     updates_made = True
+                    updated_files.append(req_file)
     
     # Check for pyproject.toml
     pyproject_file = os.path.join(project_dir, "pyproject.toml")
@@ -1596,6 +1974,31 @@ def process_python_project(project_dir):
     if os.path.exists(setup_file):
         # TODO: Implement setup.py parsing and updating
         pass
+    
+    # If updates were made, rebuild the project
+    if updates_made:
+        logging.info(f"Updates made to {project_dir}, rebuilding...")
+        
+        # Initialize managers
+        env_manager = EnvironmentManager()
+        build_manager = BuildManager(env_manager)
+        test_manager = TestManager(env_manager)
+        
+        # For each updated requirements file, install dependencies
+        for req_file in updated_files:
+            env_manager.install_dependencies(project_dir, req_file)
+        
+        # Build project if it has compiled components
+        if build_manager.has_compiled_components(project_dir):
+            build_success = build_manager.build_project(project_dir)
+            if not build_success:
+                logging.warning(f"Build failed for {project_dir}, but continuing...")
+        
+        # Run tests if available
+        if test_manager.has_tests(project_dir):
+            test_success = test_manager.run_tests(project_dir)
+            if not test_success:
+                logging.warning(f"Tests failed for {project_dir}, but continuing...")
     
     return updates_made
 
@@ -1639,7 +2042,11 @@ def main():
             "scan_directories": [os.path.expanduser("~")],
             "exclude_directories": [
                 "~/anaconda3", "~/miniconda3", "~/venv", "~/.venv"
-            ]
+            ],
+            "auto_rebuild": True,
+            "auto_test": True,
+            "rebuild_timeout": 600,  # 10 minutes timeout for rebuilds
+            "prompt_before_rebuild": False  # Set to True to prompt before rebuilding
         }
         os.makedirs(os.path.dirname(config_file), exist_ok=True)
         with open(config_file, 'w') as f:
@@ -1647,6 +2054,8 @@ def main():
     
     projects_updated = 0
     projects_processed = 0
+    projects_rebuilt = 0
+    projects_tested = 0
     
     # Process each scan directory
     for scan_dir in config["scan_directories"]:
@@ -1670,9 +2079,23 @@ def main():
             projects_processed += 1
             if process_python_project(project):
                 projects_updated += 1
+                
+                # Initialize environment manager for checking rebuild status
+                env_manager = EnvironmentManager()
+                build_manager = BuildManager(env_manager)
+                test_manager = TestManager(env_manager)
+                
+                # Log rebuild and test status
+                if build_manager.has_compiled_components(project):
+                    projects_rebuilt += 1
+                
+                if test_manager.has_tests(project):
+                    projects_tested += 1
     
     logging.info(f"Completed processing {projects_processed} Python projects")
     logging.info(f"Updated {projects_updated} projects")
+    logging.info(f"Rebuilt {projects_rebuilt} projects with compiled components")
+    logging.info(f"Tested {projects_tested} projects")
     
     # Save final knowledge base
     _save_knowledge_base()
